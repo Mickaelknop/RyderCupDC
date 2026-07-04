@@ -1,0 +1,1896 @@
+<!DOCTYPE html>
+<html lang="fr">
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     RYDER CUP FFGOLF-DC — APPLICATION DE LIVE SCORING
+     ───────────────────────────────────────────────────────────────────────────
+     Fichier unique autonome. Synchronisation temps réel via JSONBin.
+     Structure du fichier :
+       1. <head>      → métadonnées + STYLES (CSS organisé par sections)
+       2. <body>      → MARKUP (barre, hero, 4 vues, navigation)
+       3. <script>    → LOGIQUE, organisée en blocs :
+            §0 CONFIG       — identifiants cloud + données du tournoi
+            §1 ÉTAT         — structure de données + helpers
+            §2 SCORING      — calcul des mini-matchs et du score global
+            §3 RENDER       — affichage des vues
+            §4 SAISIE       — vue scoreur
+            §5 CLOUD        — synchronisation JSONBin
+            §6 NAV + INIT   — navigation et démarrage
+     ═══════════════════════════════════════════════════════════════════════════ -->
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0a2018">
+<title>Ryder Cup FFGolf-DC — Live Scoring</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Anton&family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@600;700;800&display=swap');
+
+  /* ─── TOKENS ─────────────────────────────────────────────────────────── */
+  :root {
+    --green-dark: #0a2018;
+    --green-deep: #0d2818;
+    --green-mid: #163a25;
+    --green-light: #2d6a4f;
+    --gold: #d4b25a;
+    --gold-bright: #f0cd6f;
+    --europe: #2a4a9e;
+    --europe-bright: #4a78ff;
+    --usa: #c1283a;
+    --usa-bright: #ff5a6e;
+    --cream: #f5f0e6;
+    --ink: #0a1410;
+    --win-glow: #43d98a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    font-family: 'Inter', sans-serif;
+    background: var(--green-dark);
+    color: var(--cream);
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  .app { max-width: 540px; margin: 0 auto; min-height: 100vh; position: relative; padding-bottom: 90px; }
+
+  /* ─── TOP BAR ────────────────────────────────────────────────────────── */
+  .topbar {
+    position: sticky; top: 0; z-index: 50;
+    background: linear-gradient(180deg, var(--green-deep), rgba(13,40,24,0.96));
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid rgba(212,178,90,0.25);
+    padding: 12px 16px;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  }
+  .brand { display: flex; align-items: center; gap: 9px; min-width: 0; }
+  .brand-logo { font-family: 'Oswald', 'Anton', sans-serif; font-weight: 700; font-size: 19px; letter-spacing: 1.5px; color: var(--gold); line-height: 1; white-space: nowrap; text-transform: uppercase; }
+  .brand-logo small { display: block; font-size: 8px; letter-spacing: 3px; color: rgba(245,240,230,0.5); font-family: 'Inter'; font-weight: 600; margin-top: 5px; }
+  .sync-pill { display: flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 600; padding: 5px 10px; border-radius: 20px; background: rgba(255,255,255,0.06); color: rgba(245,240,230,0.6); border: 1px solid rgba(255,255,255,0.08); white-space: nowrap; }
+  .topbar-right { display: flex; align-items: center; gap: 8px; }
+  .settings-btn { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08); border-radius: 50%; width: 34px; height: 34px; font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; transition: all 0.2s; line-height: 1; }
+  .settings-btn:active { transform: scale(0.92); }
+  .settings-btn.active { background: rgba(212,178,90,0.18); border-color: rgba(212,178,90,0.5); }
+  .sync-dot { width: 7px; height: 7px; border-radius: 50%; background: #777; flex-shrink: 0; }
+  .sync-dot.live { background: var(--win-glow); box-shadow: 0 0 8px var(--win-glow); animation: pulse 2s infinite; }
+  .sync-dot.local { background: var(--gold); }
+  .sync-dot.error { background: var(--usa-bright); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  /* ─── SCORE HERO ─────────────────────────────────────────────────────── */
+  .score-hero { padding: 20px 16px 16px; background: radial-gradient(ellipse at 50% -20%, rgba(212,178,90,0.12), transparent 60%); }
+  .score-hero-label { text-align: center; font-size: 10px; letter-spacing: 4px; font-weight: 700; color: var(--gold); margin-bottom: 14px; text-transform: uppercase; }
+  .score-board { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px; }
+  .team-score { text-align: center; }
+  .team-score .flag { font-size: 26px; line-height: 1; margin-bottom: 2px; }
+  .team-score .name { font-family: 'Anton', sans-serif; font-size: 14px; letter-spacing: 1px; margin-bottom: 6px; }
+  .team-score.europe .name { color: var(--europe-bright); }
+  .team-score.usa .name { color: var(--usa-bright); }
+  .team-score .pts { font-family: 'Anton', sans-serif; font-size: 64px; line-height: 0.8; font-variant-numeric: tabular-nums; transition: transform 0.4s cubic-bezier(.34,1.56,.64,1); }
+  .team-score.europe .pts { color: #fff; text-shadow: 0 0 24px rgba(74,120,255,0.5); }
+  .team-score.usa .pts { color: #fff; text-shadow: 0 0 24px rgba(255,90,110,0.5); }
+  .team-score .pts.bump { transform: scale(1.25); }
+  .vs-badge { font-family: 'Anton', sans-serif; font-size: 13px; color: var(--gold); opacity: 0.7; padding: 0 4px; }
+  .target-line { text-align: center; margin-top: 14px; font-size: 11px; color: rgba(245,240,230,0.55); font-weight: 500; }
+  .target-line b { color: var(--gold-bright); }
+  .progress-track { margin: 10px auto 0; max-width: 280px; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.08); position: relative; overflow: hidden; }
+  .progress-europe { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, var(--europe), var(--europe-bright)); transition: width 0.6s ease; }
+  .progress-usa { position: absolute; right: 0; top: 0; bottom: 0; background: linear-gradient(270deg, var(--usa), var(--usa-bright)); transition: width 0.6s ease; }
+  .progress-mid { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 2px; background: var(--gold); transform: translateX(-50%); z-index: 2; }
+  .lead-banner { text-align: center; margin-top: 12px; font-size: 12px; font-weight: 700; padding: 7px; border-radius: 10px; letter-spacing: 0.5px; }
+  .lead-banner.europe { background: rgba(74,120,255,0.15); color: var(--europe-bright); }
+  .lead-banner.usa { background: rgba(255,90,110,0.15); color: var(--usa-bright); }
+  .lead-banner.tie { background: rgba(212,178,90,0.15); color: var(--gold-bright); }
+  .lead-banner.win { background: linear-gradient(90deg, rgba(67,217,138,0.2), rgba(212,178,90,0.2)); color: var(--win-glow); animation: winpulse 1.5s infinite; }
+  @keyframes winpulse { 0%,100% { box-shadow: 0 0 0 rgba(67,217,138,0); } 50% { box-shadow: 0 0 20px rgba(67,217,138,0.3); } }
+
+  /* ─── NAV ────────────────────────────────────────────────────────────── */
+  .nav { position: fixed; bottom: 0; left: 50%; transform: translateX(-50%); width: 100%; max-width: 540px; z-index: 60; background: linear-gradient(0deg, var(--green-deep), rgba(13,40,24,0.97)); backdrop-filter: blur(10px); border-top: 1px solid rgba(212,178,90,0.25); display: flex; padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); gap: 6px; }
+  .nav-btn { flex: 1; background: none; border: none; color: rgba(245,240,230,0.5); font-family: 'Inter'; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; padding: 8px 4px; border-radius: 12px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 4px; transition: all 0.2s; text-transform: uppercase; }
+  .nav-btn .ic { font-size: 19px; line-height: 1; }
+  .nav-btn.active { color: var(--gold-bright); background: rgba(212,178,90,0.12); }
+
+  /* ─── VIEWS ──────────────────────────────────────────────────────────── */
+  .view { display: none; padding: 8px 16px 20px; animation: fadeIn 0.3s; }
+  .view.active { display: block; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .section-title { font-family: 'Anton', sans-serif; font-size: 15px; letter-spacing: 1px; color: var(--gold); margin: 18px 0 12px; display: flex; align-items: center; gap: 8px; }
+  .section-title::after { content: ''; flex: 1; height: 1px; background: rgba(212,178,90,0.2); }
+
+  /* ─── BOUCLE TABS (live) ─────────────────────────────────────────────── */
+  .boucle-tabs { display: flex; gap: 6px; margin-top: 8px; }
+  .btab {
+    flex: 1; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 11px; padding: 9px 6px; cursor: pointer; text-align: center;
+    transition: all 0.2s; position: relative;
+  }
+  .btab.active { background: rgba(212,178,90,0.14); border-color: rgba(212,178,90,0.5); }
+  .btab .bt-name { font-family: 'Anton'; font-size: 12px; letter-spacing: 0.5px; color: var(--cream); }
+  .btab.active .bt-name { color: var(--gold-bright); }
+  .btab .bt-fmt { font-size: 8px; font-weight: 600; color: rgba(245,240,230,0.45); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 2px; }
+  .btab .bt-score { font-family: 'JetBrains Mono'; font-size: 10px; font-weight: 700; margin-top: 3px; }
+  .btab .bt-score .e { color: var(--europe-bright); }
+  .btab .bt-score .u { color: var(--usa-bright); }
+  .btab .bt-live { position: absolute; top: 5px; right: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--win-glow); box-shadow: 0 0 6px var(--win-glow); animation: pulse 2s infinite; }
+  .btab .bt-done { position: absolute; top: 5px; right: 6px; font-size: 8px; color: var(--win-glow); }
+
+  /* ─── MATCH CARDS ────────────────────────────────────────────────────── */
+  .match-card { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 14px; margin-bottom: 12px; position: relative; overflow: hidden; }
+  .match-card.boucle-active { border-color: rgba(212,178,90,0.5); background: rgba(212,178,90,0.06); }
+  .match-card-top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; margin-bottom: 12px; gap: 8px; }
+  .match-card-top .match-tag { justify-self: start; }
+  .match-card-top .match-format { justify-self: end; text-align: right; }
+  .mc-badge { justify-self: center; font-size: 8.5px; font-weight: 800; letter-spacing: 0.8px; padding: 3px 9px; border-radius: 6px; white-space: nowrap; }
+  .mc-badge.done { background: var(--win-glow); color: var(--ink); }
+  .mc-badge.live { background: rgba(240,205,111,0.16); color: var(--gold-bright); border: 1px solid rgba(240,205,111,0.4); }
+  .match-tag { font-size: 9px; font-weight: 800; letter-spacing: 1.5px; text-transform: uppercase; color: var(--gold); background: rgba(212,178,90,0.12); padding: 4px 9px; border-radius: 7px; }
+  .match-format { font-size: 10px; color: rgba(245,240,230,0.5); font-weight: 600; }
+  .match-row { display: grid; grid-template-columns: 1fr 56px 1fr; align-items: center; gap: 8px; }
+  .match-side { display: flex; flex-direction: column; gap: 3px; }
+  .match-side.right { text-align: right; align-items: flex-end; }
+  .ms-team { font-size: 9px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; }
+  .ms-team.europe { color: var(--europe-bright); }
+  .ms-team.usa { color: var(--usa-bright); }
+  .ms-players { font-size: 12px; font-weight: 600; line-height: 1.25; color: var(--cream); }
+  .ms-players .solo { color: var(--cream); }
+  .match-center { text-align: center; }
+  .match-status { font-family: 'JetBrains Mono', monospace; font-size: 18px; font-weight: 800; line-height: 1; padding: 6px 0; }
+  .match-status .mst-who { display: block; font-size: 11px; letter-spacing: 1px; margin-bottom: 3px; }
+  .match-status .mst-score { display: block; font-size: 18px; }
+  .match-status.europe { color: var(--europe-bright); }
+  .match-status.usa { color: var(--usa-bright); }
+  .match-status.allsquare { color: var(--gold-bright); font-size: 13px; }
+  .match-thru { font-size: 8.5px; color: rgba(245,240,230,0.4); font-weight: 600; letter-spacing: 0.5px; margin-top: 3px; }
+  .match-dots { display: flex; gap: 3px; justify-content: center; margin-top: 10px; flex-wrap: wrap; }
+  .mdot { width: 14px; height: 14px; border-radius: 4px; background: rgba(255,255,255,0.08); font-size: 8px; display: flex; align-items: center; justify-content: center; font-weight: 700; color: rgba(255,255,255,0.3); }
+  .mdot.e { background: var(--europe); color: #fff; }
+  .mdot.u { background: var(--usa); color: #fff; }
+  .mdot.h { background: rgba(212,178,90,0.5); color: var(--ink); }
+  /* ─── BONUS MINI-MATCH ───────────────────────────────────────────────── */
+  .mdot.clinch { box-shadow: 2px 0 0 var(--gold); }
+  .bonus-mm { margin-top: 10px; padding: 9px 11px; border-radius: 10px; background: rgba(212,178,90,0.1); border: 1px dashed rgba(212,178,90,0.45); }
+  .bonus-mm-head { font-size: 9.5px; font-weight: 700; color: var(--gold-bright); letter-spacing: 0.3px; margin-bottom: 5px; }
+  .bonus-mm-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .bmm-status { font-family: 'JetBrains Mono'; font-size: 13px; font-weight: 800; }
+  .bmm-status.europe { color: var(--europe-bright); }
+  .bmm-status.usa { color: var(--usa-bright); }
+  .bmm-status.allsquare { color: var(--gold-bright); }
+  .bmm-thru { font-size: 9px; color: rgba(245,240,230,0.5); font-weight: 600; }
+
+  /* ─── SIMPLE (1v1) LIVE ROWS ─────────────────────────────────────────── */
+  .simple-live-list { display: flex; flex-direction: column; gap: 7px; }
+  .simple-live-row { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px; background: rgba(0,0,0,0.18); border-radius: 9px; padding: 8px 10px; }
+  .simple-live-row .slr-eu { font-size: 12px; font-weight: 600; color: var(--europe-bright); }
+  .simple-live-row .slr-us { font-size: 12px; font-weight: 600; color: var(--usa-bright); text-align: right; }
+  .simple-live-row .slr-status { font-family: 'JetBrains Mono'; font-size: 13px; font-weight: 800; padding: 0 6px; }
+  .simple-live-row .slr-status.europe { color: var(--europe-bright); }
+  .simple-live-row .slr-status.usa { color: var(--usa-bright); }
+  .simple-live-row .slr-status.allsquare { color: var(--gold-bright); font-size: 11px; }
+  .simple-live-row .slr-bonus { font-size: 10px; font-weight: 700; margin-left: 4px; }
+
+  /* ─── CARDS / FORMS ──────────────────────────────────────────────────── */
+  .card { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 16px; margin-bottom: 14px; }
+  .card h3 { font-size: 13px; font-weight: 800; margin-bottom: 6px; color: var(--cream); }
+  .card p { font-size: 12px; color: rgba(245,240,230,0.6); line-height: 1.5; margin-bottom: 10px; }
+  .btn { width: 100%; border: none; border-radius: 12px; padding: 14px; font-family: 'Inter'; font-size: 14px; font-weight: 700; cursor: pointer; transition: transform 0.1s, filter 0.2s; }
+  .btn:active { transform: scale(0.97); }
+  .btn-gold { background: linear-gradient(135deg, var(--gold), var(--gold-bright)); color: var(--ink); }
+  .btn-ghost { background: rgba(255,255,255,0.06); color: var(--cream); border: 1px solid rgba(255,255,255,0.12); }
+  .btn-sm { padding: 9px; font-size: 12px; }
+
+  .group-picker { display: flex; flex-direction: column; gap: 10px; }
+  .group-opt { background: rgba(255,255,255,0.04); border: 1.5px solid rgba(255,255,255,0.1); border-radius: 14px; padding: 14px; cursor: pointer; transition: all 0.2s; text-align: left; }
+  .group-opt:active { transform: scale(0.98); }
+  .group-opt.selected { border-color: var(--gold); background: rgba(212,178,90,0.1); }
+  .group-opt-name { font-family: 'Anton'; font-size: 16px; color: var(--gold-bright); margin-bottom: 6px; }
+  .group-opt-vs { font-size: 12px; font-weight: 600; line-height: 1.4; }
+  .group-opt-vs .e { color: var(--europe-bright); }
+  .group-opt-vs .u { color: var(--usa-bright); }
+
+  /* ─── SCORER ENTRY ───────────────────────────────────────────────────── */
+  .scorer-head { background: linear-gradient(135deg, rgba(212,178,90,0.15), rgba(212,178,90,0.04)); border: 1px solid rgba(212,178,90,0.3); border-radius: 16px; padding: 14px; margin-bottom: 14px; }
+  .scorer-head-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+  .scorer-group-name { font-family: 'Anton'; font-size: 20px; color: var(--gold-bright); }
+  .scorer-change { font-size: 10px; color: rgba(245,240,230,0.5); background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); padding: 5px 10px; border-radius: 8px; cursor: pointer; }
+  .scorer-matchup { display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; }
+  .scorer-matchup .e { color: var(--europe-bright); }
+  .scorer-matchup .u { color: var(--usa-bright); text-align: right; }
+  .hole-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+  .hole-arrow { width: 44px; height: 44px; border-radius: 12px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: var(--cream); font-size: 20px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  .hole-arrow:disabled { opacity: 0.3; pointer-events: none; }
+  .hole-arrow.soft-disabled { opacity: 0.35; }
+  .need-score-hint { text-align: center; font-size: 10.5px; font-weight: 600; color: rgba(245,240,230,0.45); margin: 2px 0 4px; }
+  .need-score-hint.flash { color: var(--usa-bright); animation: hintflash 0.5s; }
+  @keyframes hintflash { 0%,100% { transform: scale(1); } 30% { transform: scale(1.06); } }
+  .hole-display { text-align: center; }
+  .hole-num { font-family: 'Anton'; font-size: 34px; line-height: 0.9; color: var(--cream); }
+  .hole-label { font-size: 9px; letter-spacing: 2px; color: var(--gold); font-weight: 700; text-transform: uppercase; }
+  .hole-boucle { font-size: 10px; color: rgba(245,240,230,0.55); font-weight: 600; margin-top: 2px; }
+  .format-banner { text-align: center; font-size: 11px; font-weight: 700; color: var(--gold-bright); background: rgba(212,178,90,0.1); border-radius: 10px; padding: 8px; margin: 10px 0 16px; letter-spacing: 0.5px; }
+  .winner-q { text-align: center; font-size: 12px; font-weight: 600; color: rgba(245,240,230,0.7); margin-bottom: 12px; }
+  .winner-opts { display: flex; flex-direction: column; gap: 10px; }
+  .winner-opts.compact { gap: 6px; }
+  .winner-opts.compact .wbtn { padding: 11px 12px; font-size: 13px; }
+  .simple-match { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 11px; margin-bottom: 10px; }
+  .simple-match-title { text-align: center; font-size: 12px; font-weight: 700; margin-bottom: 9px; }
+  .simple-match-title .e { color: var(--europe-bright); }
+  .simple-match-title .u { color: var(--usa-bright); }
+  .simple-match-title .vs { color: rgba(245,240,230,0.4); font-size: 10px; margin: 0 4px; }
+  .wbtn { border: 2px solid transparent; border-radius: 14px; padding: 16px; cursor: pointer; font-family: 'Inter'; font-weight: 700; font-size: 14px; transition: all 0.15s; display: flex; align-items: center; justify-content: space-between; gap: 10px; text-align: left; }
+  .wbtn:active { transform: scale(0.98); }
+  .wbtn-e { background: rgba(42,74,158,0.2); color: var(--europe-bright); border-color: rgba(74,120,255,0.3); }
+  .wbtn-e.sel { background: var(--europe); color: #fff; border-color: var(--europe-bright); box-shadow: 0 0 16px rgba(74,120,255,0.4); }
+  .wbtn-u { background: rgba(193,40,58,0.2); color: var(--usa-bright); border-color: rgba(255,90,110,0.3); }
+  .wbtn-u.sel { background: var(--usa); color: #fff; border-color: var(--usa-bright); box-shadow: 0 0 16px rgba(255,90,110,0.4); }
+  .wbtn-h { background: rgba(212,178,90,0.12); color: var(--gold-bright); border-color: rgba(212,178,90,0.3); justify-content: center; }
+  .wbtn-h.sel { background: var(--gold); color: var(--ink); border-color: var(--gold-bright); }
+  .wbtn .wb-players { font-size: 11px; font-weight: 500; opacity: 0.85; }
+  .wbtn .wb-check { font-size: 18px; opacity: 0; }
+  .wbtn.sel .wb-check { opacity: 1; }
+  .hole-status-now { text-align: center; margin-top: 12px; padding: 12px; border-radius: 12px; background: rgba(0,0,0,0.25); font-size: 13px; font-weight: 700; }
+  .hole-status-now .big { font-family: 'JetBrains Mono'; font-size: 16px; }
+  .hole-status-now .hsn-label { font-size: 11px; font-weight: 600; color: rgba(245,240,230,0.6); margin-bottom: 4px; }
+  .hole-status-now .hsn-detail { font-size: 10px; color: rgba(245,240,230,0.45); margin-top: 4px; font-weight: 500; }
+  .hole-status-now.frozen { background: rgba(67,217,138,0.08); border: 1px solid rgba(67,217,138,0.3); }
+  .hole-status-now.frozen .hsn-label { color: var(--win-glow); }
+  .hole-status-now.bonus { background: rgba(212,178,90,0.1); border: 1px dashed rgba(212,178,90,0.45); }
+  .hole-status-now.bonus .hsn-label { color: var(--gold-bright); }
+  .saved-toast { position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--win-glow); color: var(--ink); padding: 10px 20px; border-radius: 30px; font-size: 13px; font-weight: 800; opacity: 0; pointer-events: none; transition: all 0.3s; z-index: 100; box-shadow: 0 6px 20px rgba(67,217,138,0.4); }
+  .saved-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* ─── STANDINGS ──────────────────────────────────────────────────────── */
+  .boucle-summary { display: flex; flex-direction: column; gap: 10px; }
+  .bsum { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 13px; }
+  .bsum.active { border-color: rgba(212,178,90,0.4); }
+  .bsum-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .bsum-name { font-weight: 800; font-size: 13px; }
+  .bsum-name small { display: block; font-size: 9px; color: rgba(245,240,230,0.5); font-weight: 600; }
+  .bsum-pts { display: flex; gap: 12px; align-items: center; }
+  .bsum-pt { text-align: center; }
+  .bsum-pt .v { font-family: 'JetBrains Mono'; font-size: 18px; font-weight: 800; }
+  .bsum-pt.e .v { color: var(--europe-bright); }
+  .bsum-pt.u .v { color: var(--usa-bright); }
+  .bsum-pt .l { font-size: 7px; letter-spacing: 1px; color: rgba(245,240,230,0.4); font-weight: 700; }
+  .bsum-groups { display: grid; grid-template-columns: repeat(3,1fr); gap: 6px; }
+  .bsum-g { background: rgba(0,0,0,0.2); border-radius: 8px; padding: 7px 5px; text-align: center; }
+  .bsum-g .gn { font-size: 8px; color: rgba(245,240,230,0.45); font-weight: 700; margin-bottom: 3px; }
+  .bsum-g .gs { font-family: 'JetBrains Mono'; font-size: 11px; font-weight: 700; }
+  .bsum-g.e { border-bottom: 2px solid var(--europe-bright); }
+  .bsum-g.u { border-bottom: 2px solid var(--usa-bright); }
+  .bsum-g.h { border-bottom: 2px solid var(--gold); }
+  .bsum-g.pending { opacity: 0.4; }
+  .bsum-bonus { font-size: 8px; font-weight: 700; white-space: nowrap; }
+  .bsum-g .gsub { font-size: 8px; color: rgba(245,240,230,0.4); font-weight: 600; margin-top: 2px; }
+  .bsum-g .gsub.done { color: var(--win-glow); }
+  .bsum-g .gsub.live { color: var(--gold-bright); }
+  .bsum-g .gs-simple { display: flex; align-items: baseline; justify-content: center; gap: 3px; flex-wrap: wrap; }
+  .bsum-g .gs-eu { color: var(--europe-bright); font-weight: 800; }
+  .bsum-g .gs-us { color: var(--usa-bright); font-weight: 800; }
+  .bsum-g .gs-sep { color: rgba(245,240,230,0.4); }
+  .bsum-g .gs-neutral { color: rgba(245,240,230,0.5); }
+  .roster-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .roster-col h4 { font-size: 11px; font-weight: 800; letter-spacing: 1px; margin-bottom: 8px; text-transform: uppercase; }
+  .roster-col.e h4 { color: var(--europe-bright); }
+  .roster-col.u h4 { color: var(--usa-bright); }
+  .roster-player { display: flex; justify-content: space-between; font-size: 12px; padding: 6px 8px; background: rgba(0,0,0,0.2); border-radius: 7px; margin-bottom: 5px; }
+  .roster-player .idx { font-family: 'JetBrains Mono'; color: rgba(245,240,230,0.5); font-weight: 600; }
+
+  /* ─── SETTINGS ───────────────────────────────────────────────────────── */
+  .cloud-status { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 12px; font-weight: 600; }
+  .mini-note { font-size: 10px; color: rgba(245,240,230,0.4); margin-top: 8px; line-height: 1.5; }
+  .save-card { border-color: rgba(212,178,90,0.4); background: rgba(212,178,90,0.06); }
+
+  /* ─── TEAM EDITOR ────────────────────────────────────────────────────── */
+  /* Une seule grille partagée : en-tête + lignes -> colonnes strictement alignées */
+  #editorList { display: grid; grid-template-columns: minmax(0,1fr) 62px 76px auto 24px; gap: 6px 6px; align-items: center; }
+  .erow-head { display: contents; }
+  .erow-head span { font-size: 8px; font-weight: 800; letter-spacing: 0.5px; text-transform: uppercase; color: rgba(245,240,230,0.4); text-align: center; padding-bottom: 2px; }
+  .erow-head span:first-child { text-align: left; padding-left: 2px; }
+  .erow { display: contents; }
+  .erow input { background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.12); color: var(--cream); padding: 9px 8px; border-radius: 9px; font-size: 13px; font-family: inherit; width: 100%; min-width: 0; }
+  .erow input:focus { outline: none; border-color: var(--gold); }
+  .erow input.idx { text-align: center; font-family: 'JetBrains Mono'; font-weight: 600; padding: 9px 4px; }
+  .eseg { display: flex; border-radius: 9px; overflow: hidden; border: 1px solid rgba(255,255,255,0.12); width: 100%; }
+  .eseg button { flex: 1; border: none; background: rgba(0,0,0,0.3); color: rgba(245,240,230,0.5); font-family: inherit; font-size: 11px; font-weight: 700; padding: 9px 4px; cursor: pointer; }
+  .eseg button.on-e { background: var(--europe); color: #fff; }
+  .eseg button.on-u { background: var(--usa); color: #fff; }
+  .eseg.grp button { flex: 1; padding: 9px 4px; }
+  .eseg.grp button.on { background: var(--gold); color: var(--ink); }
+  .edel { background: none; border: none; color: rgba(255,90,110,0.6); font-size: 18px; cursor: pointer; padding: 0; line-height: 1; justify-self: center; }
+  .editor-balance { display: flex; justify-content: space-around; margin-top: 12px; padding: 10px; background: rgba(0,0,0,0.25); border-radius: 10px; font-size: 11px; }
+  .editor-balance .eb { text-align: center; }
+  .editor-balance .eb .lbl { font-size: 8px; letter-spacing: 1px; text-transform: uppercase; color: rgba(245,240,230,0.4); font-weight: 700; }
+  .editor-balance .eb .val { font-family: 'JetBrains Mono'; font-size: 14px; font-weight: 800; margin-top: 2px; }
+  .editor-balance .eb.e .val { color: var(--europe-bright); }
+  .editor-balance .eb.u .val { color: var(--usa-bright); }
+  .editor-balance .eb.d .val { color: var(--gold-bright); }
+  .editor-warn-bad { color: var(--usa-bright) !important; font-weight: 700; }
+
+  /* ─── BOUCLES / GROUPS EDITOR ────────────────────────────────────────── */
+  .brow { display: grid; grid-template-columns: auto 1fr 84px; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .brow .blab { font-family: 'Anton'; font-size: 13px; color: var(--gold-bright); white-space: nowrap; }
+  .brow select { background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.12); color: var(--cream); padding: 9px 8px; border-radius: 9px; font-size: 12.5px; font-family: inherit; width: 100%; }
+  .brow select:focus { outline: none; border-color: var(--gold); }
+  .bholes { display: flex; align-items: center; gap: 4px; }
+  .bholes button { width: 28px; height: 34px; border: 1px solid rgba(255,255,255,0.12); background: rgba(0,0,0,0.3); color: var(--cream); border-radius: 8px; font-size: 16px; cursor: pointer; }
+  .bholes input { width: 36px; text-align: center; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.12); color: var(--cream); padding: 8px 2px; border-radius: 8px; font-family: 'JetBrains Mono'; font-weight: 700; font-size: 13px; }
+  .cfg-total { margin-top: 10px; text-align: center; font-size: 12px; font-weight: 700; color: var(--gold-bright); background: rgba(212,178,90,0.1); border-radius: 9px; padding: 8px; }
+
+  /* ─── TOGGLE ─────────────────────────────────────────────────────────── */
+  .toggle-row { display: flex; align-items: flex-start; gap: 12px; margin-top: 14px; cursor: pointer; }
+  .toggle-switch { position: relative; flex-shrink: 0; margin-top: 2px; }
+  .toggle-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .toggle-slider { display: block; width: 44px; height: 26px; border-radius: 13px; background: rgba(255,255,255,0.15); transition: background 0.2s; position: relative; }
+  .toggle-slider::after { content: ''; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: transform 0.2s; }
+  .toggle-switch input:checked + .toggle-slider { background: var(--win-glow); }
+  .toggle-switch input:checked + .toggle-slider::after { transform: translateX(18px); }
+  .toggle-label { font-size: 12px; line-height: 1.4; }
+  .toggle-label b { color: var(--cream); display: block; margin-bottom: 2px; }
+  .toggle-label small { color: rgba(245,240,230,0.55); font-size: 11px; line-height: 1.45; }
+  .ngroups-row { display: flex; align-items: center; justify-content: center; gap: 16px; }
+  .ngroups-val { text-align: center; }
+  .ngroups-val span { font-family: 'Anton'; font-size: 34px; color: var(--gold-bright); line-height: 0.9; }
+  .ngroups-val small { display: block; font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: rgba(245,240,230,0.5); font-weight: 700; }
+  .confetti { position: fixed; width: 10px; height: 10px; z-index: 200; pointer-events: none; top: -20px; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ═══ TOP BAR ═══ -->
+  <div class="topbar">
+    <div class="brand"><div class="brand-logo">RYDER CUP<small id="cupNameLabel">FFGolf-DC</small></div></div>
+    <div class="topbar-right">
+      <div class="sync-pill" id="syncPill"><span class="sync-dot local" id="syncDot"></span><span id="syncText">Connexion…</span></div>
+      <button class="settings-btn" id="btnSettings" data-view="settings" aria-label="Réglages">⚙️</button>
+    </div>
+  </div>
+
+  <!-- Bandeau d'erreur de synchro (masqué par défaut) -->
+  <div id="errBanner" style="display:none; background:rgba(193,40,58,0.92); color:#fff; font-size:11.5px; font-weight:600; line-height:1.4; padding:10px 16px; text-align:center;"></div>
+
+  <!-- ═══ SCORE HERO (toujours visible) ═══ -->
+  <div class="score-hero">
+    <div class="score-hero-label">Score Général</div>
+    <div class="score-board">
+      <div class="team-score europe"><div class="flag">🇪🇺</div><div class="name">Europe</div><div class="pts" id="ptsEurope">0</div></div>
+      <div class="vs-badge">—</div>
+      <div class="team-score usa"><div class="flag">🇺🇸</div><div class="name">USA</div><div class="pts" id="ptsUsa">0</div></div>
+    </div>
+    <div class="progress-track">
+      <div class="progress-europe" id="progE" style="width:0%"></div>
+      <div class="progress-usa" id="progU" style="width:0%"></div>
+      <div class="progress-mid"></div>
+    </div>
+    <div class="target-line" id="targetLine">Victoire à <b>5 points</b> · 9 matchs · <span id="matchesDone">0</span>/9 terminés</div>
+    <div class="lead-banner tie" id="leadBanner">Tout reste à jouer</div>
+  </div>
+
+  <!-- ═══ VUE LIVE ═══ -->
+  <div class="view active" id="view-live">
+    <div class="boucle-tabs" id="boucleTabs"></div>
+    <div class="section-title" id="liveBoucleTitle">Boucle en cours</div>
+    <div id="liveMatches"></div>
+  </div>
+
+  <!-- ═══ VUE SAISIE ═══ -->
+  <div class="view" id="view-scorer">
+    <div id="scorerPicker">
+      <div class="card"><h3>Qui es-tu ?</h3><p>Choisis le groupe dont tu saisis les scores. Une seule personne par groupe tient le score.</p></div>
+      <div class="group-picker" id="groupPicker"></div>
+    </div>
+    <div id="scorerEntry" style="display:none;"></div>
+  </div>
+
+  <!-- ═══ VUE CLASSEMENT ═══ -->
+  <div class="view" id="view-standings">
+    <div class="section-title">Détail par boucle</div>
+    <div class="boucle-summary" id="boucleSummary"></div>
+    <div class="section-title">Les équipes</div>
+    <div class="card"><div class="roster-grid" id="rosterGrid"></div></div>
+  </div>
+
+  <!-- ═══ VUE RÉGLAGES ═══ -->
+  <div class="view" id="view-settings">
+
+    <div class="section-title">Nom de l'événement</div>
+    <div class="card">
+      <p>Personnalise le nom affiché sous « RYDER CUP » (logo + onglet).</p>
+      <div style="display:flex; align-items:center; gap:8px; font-family:'Anton'; font-size:15px; color:var(--gold); margin-bottom:8px;">
+        RYDER CUP
+        <input type="text" id="inpCupName" maxlength="40" placeholder="FFGolf-DC"
+          style="flex:1; background:rgba(0,0,0,0.3); border:1px solid rgba(255,255,255,0.12); color:var(--cream); padding:9px 10px; border-radius:9px; font-size:14px; font-family:'Inter'; font-weight:600;">
+      </div>
+      <p class="mini-note">Exemples : « FFGolf-DC », « Entreprise FFGolf », « du Club 2026 »…</p>
+    </div>
+
+    <div class="section-title">Format des boucles</div>
+    <div class="card">
+      <p>Définis le nombre de boucles, le format de jeu et le nombre de trous de chacune. Le total de trous se met à jour automatiquement.</p>
+      <div id="bouclesEditor"></div>
+      <div style="display:flex; gap:8px; margin-top:8px;">
+        <button class="btn btn-ghost btn-sm" id="btnAddBoucle" style="flex:1;">＋ Boucle</button>
+        <button class="btn btn-ghost btn-sm" id="btnRemBoucle" style="flex:1;">－ Boucle</button>
+      </div>
+      <div class="cfg-total" id="holesTotal"></div>
+      <label class="toggle-row" id="bonusToggle">
+        <span class="toggle-switch"><input type="checkbox" id="chkBonus"><span class="toggle-slider"></span></span>
+        <span class="toggle-label">
+          <b>Mini-match bonus sur les trous restants</b>
+          <small>Quand un mini-match est plié avant la fin d'une boucle, les trous restants forment un mini-match supplémentaire valant 1 point. Le seuil de victoire devient alors dynamique.</small>
+        </span>
+      </label>
+    </div>
+
+    <div class="section-title">Nombre de groupes</div>
+    <div class="card">
+      <p>Une partie comporte entre 2 et 4 joueurs. Ajuste le nombre de groupes ; chaque joueur s'affecte ensuite à un groupe ci-dessous.</p>
+      <div class="ngroups-row">
+        <button class="btn btn-ghost" id="btnGrpMinus" style="width:48px;">－</button>
+        <div class="ngroups-val"><span id="numGroupsVal">3</span><small>groupes</small></div>
+        <button class="btn btn-ghost" id="btnGrpPlus" style="width:48px;">＋</button>
+      </div>
+    </div>
+
+    <div class="section-title">Composition des équipes</div>
+    <div class="card">
+      <p>Modifie les joueurs, leur index, leur camp (EU/USA) et leur groupe.</p>
+      <div id="editorList"></div>
+      <button class="btn btn-ghost btn-sm" id="btnAddPlayer" style="margin-top:6px;">＋ Ajouter un joueur</button>
+      <div id="editorBalance" class="editor-balance"></div>
+    </div>
+
+    <div class="card save-card">
+      <p style="margin-bottom:10px;">Enregistre toute la configuration (nom, formats, groupes, joueurs). Les changements se synchronisent sur tous les appareils.</p>
+      <div style="display:flex; gap:8px;">
+        <button class="btn btn-gold" id="btnSavePlayers" style="flex:2;">Enregistrer la configuration</button>
+        <button class="btn btn-ghost" id="btnResetPlayers" style="flex:1;">9 joueurs d'origine</button>
+      </div>
+      <p class="mini-note" id="editorWarn"></p>
+    </div>
+
+    <div class="card">
+      <h3>⭐ Ma composition par défaut</h3>
+      <p id="savedCompStatus" style="font-size:11.5px; color:rgba(245,240,230,0.6);">Aucune composition personnalisée enregistrée.</p>
+      <div style="display:flex; gap:8px; margin-top:10px;">
+        <button class="btn btn-gold" id="btnSetDefault" style="flex:1;">💾 Définir comme défaut</button>
+        <button class="btn btn-ghost" id="btnLoadDefault" style="flex:1;">↺ Charger</button>
+      </div>
+      <p class="mini-note">« Définir comme défaut » mémorise la composition affichée (joueurs, groupes, formats, nom) comme ta référence, partagée sur tous les appareils. « Charger » la restaure d'un clic.</p>
+    </div>
+
+    <div class="section-title">Synchronisation</div>
+    <div class="card">
+      <div class="cloud-status"><span class="sync-dot" id="cloudStatusDot"></span><span id="cloudStatusText">…</span></div>
+      <p>La synchronisation cloud est intégrée à l'application : tous les appareils ouvrant ce fichier (ou son lien) voient les scores en temps réel, automatiquement.</p>
+      <button class="btn btn-ghost btn-sm" id="btnShareLink">📋 Copier le lien à partager</button>
+      <p class="mini-note">Partage ce fichier (ou héberge-le) à tous les joueurs. Les scoreurs vont dans « Saisie », les autres regardent « Live ».</p>
+    </div>
+    <div class="card">
+      <h3>⚠️ La saisie ne se synchronise pas ?</h3>
+      <p>Si le bandeau rouge « écriture refusée » apparaît, c'est que ta clé d'accès JSONBin n'a que la permission de lecture. Les permissions d'une clé ne sont pas modifiables — il faut en créer une nouvelle :</p>
+      <p style="font-size:11.5px; color:rgba(245,240,230,0.7); line-height:1.7;">
+        1. Sur jsonbin.io → <b>API Keys</b> → <b>Access Keys</b><br>
+        2. Crée une nouvelle clé en cochant <b>READ</b> ET <b>UPDATE</b> (et idéalement CREATE)<br>
+        3. Copie la nouvelle clé, puis remplace dans le fichier HTML la valeur de <code style="background:rgba(0,0,0,0.3);padding:1px 4px;border-radius:3px;">accessKey</code> (tout en haut, section §0 CONFIG)<br>
+        4. Recharge la page sur tous les appareils
+      </p>
+    </div>
+    <div class="section-title">Données</div>
+    <div class="card">
+      <p>Réinitialiser efface tous les scores (sur le cloud aussi). À faire avant une nouvelle partie.</p>
+      <button class="btn btn-ghost" id="btnReset" style="border-color:rgba(255,90,110,0.4); color:var(--usa-bright);">Réinitialiser tous les scores</button>
+    </div>
+    <div class="section-title">À propos</div>
+    <div class="card"><p style="margin:0;" id="aboutText">Match play par boucle : 1 point par mini-match gagné, 0,5 si nul. Le seuil de victoire s'ajuste au nombre de groupes et de boucles.</p></div>
+  </div>
+
+  <!-- ═══ NAV ═══ -->
+  <div class="nav">
+    <button class="nav-btn active" data-view="live"><span class="ic">📊</span>Live</button>
+    <button class="nav-btn" data-view="scorer"><span class="ic">✏️</span>Saisie</button>
+    <button class="nav-btn" data-view="standings"><span class="ic">🏆</span>Classement</button>
+  </div>
+
+  <div class="saved-toast" id="savedToast">✓ Enregistré</div>
+</div>
+
+<script>
+"use strict";
+/* ═══════════════════════════════════════════════════════════════════════════
+   §0 — CONFIGURATION
+   ─────────────────────────────────────────────────────────────────────────── */
+
+// Identifiants JSONBin (clé d'accès restreinte à ce bin, lecture + écriture).
+const CLOUD = {
+  binId:  '6a40419dda38895dfe08f15c',
+  accessKey: '$2a$10$LNcMAR903fr6LNxwTVooqu3bxZPaHKoyIu3B9BuSvJsNXIdPwM1De',
+  connected: false,
+  pollMs: 8000,
+};
+
+// ── FORMATS DE JEU DISPONIBLES ──────────────────────────────────────────
+const FORMAT_OPTIONS = [
+  { id:'scramble',  label:'Scramble',                 short:'Scramble' },
+  { id:'bestball',  label:'4 Balles Meilleure Balle', short:'4 Balles' },
+  { id:'greensome', label:'Greensomes',               short:'Greensomes' },
+  { id:'foursome',  label:'Foursome (tir alterné)',   short:'Foursome' },
+  { id:'simple',    label:'Simple (1 contre 1)',       short:'Simple' },
+  { id:'autre',     label:'Autre',                     short:'Autre' },
+];
+function formatById(id){ return FORMAT_OPTIONS.find(f=>f.id===id) || FORMAT_OPTIONS[1]; }
+
+// ── COMPOSITION & FORMAT PAR DÉFAUT ─────────────────────────────────────
+// Toute la configuration (joueurs, nombre de groupes, boucles) est éditable
+// dans Réglages et synchronisée sur le cloud.
+const DEFAULT_PLAYERS = [
+  { name: 'Arnaud',      idx: 2.8,  team: 'E', group: 1 },
+  { name: 'Nico',        idx: 13.2, team: 'E', group: 1 },
+  { name: 'Mika',        idx: 6.1,  team: 'U', group: 1 },
+  { name: 'Aurélien',    idx: 6.1,  team: 'E', group: 2 },
+  { name: 'Christophe',  idx: -1.0, team: 'U', group: 2 },
+  { name: 'Renald',      idx: 15.5, team: 'U', group: 2 },
+  { name: 'Christopher', idx: 3.4,  team: 'E', group: 3 },
+  { name: 'Vincent',     idx: 3.8,  team: 'E', group: 3 },
+  { name: 'Laura',       idx: 3.2,  team: 'U', group: 3 },
+];
+const DEFAULT_NUMGROUPS = 3;
+const DEFAULT_BOUCLES = [
+  { format:'bestball',  holes:6 },
+  { format:'greensome', holes:6 },
+  { format:'foursome',  holes:6 },
+];
+
+// État de configuration courant (sera surchargé par le cloud).
+let PLAYERS    = DEFAULT_PLAYERS.map(p => Object.assign({}, p));
+let NUMGROUPS  = DEFAULT_NUMGROUPS;
+let BOUCLE_CFG = DEFAULT_BOUCLES.map(b => Object.assign({}, b));
+let BONUS_MM   = false;   // mini-match bonus sur les trous restants après clôture anticipée
+let CUP_NAME   = 'FFGolf-DC';  // sous-titre associé à "RYDER CUP"
+let SAVED_COMP = null;         // composition "par défaut" personnalisée (partagée via le cloud)
+
+// Structures dérivées.
+let ROSTER = { europe: [], usa: [] };
+let GROUPS = {};
+let BOUCLES = [];
+
+// Reconstruit ROSTER, GROUPS et BOUCLES à partir de la configuration courante.
+function buildConfig() {
+  // Roster
+  ROSTER = { europe: [], usa: [] };
+  PLAYERS.forEach(p => { (p.team === 'E' ? ROSTER.europe : ROSTER.usa).push({ name: p.name, idx: p.idx }); });
+  // Groupes (1..NUMGROUPS)
+  GROUPS = {};
+  for (let gn = 1; gn <= NUMGROUPS; gn++) {
+    const gid = 'G' + gn;
+    const eu = PLAYERS.filter(p => p.group === gn && p.team === 'E').map(p => p.name);
+    const us = PLAYERS.filter(p => p.group === gn && p.team === 'U').map(p => p.name);
+    GROUPS[gid] = {
+      name: 'Groupe ' + gn, europe: eu, usa: us,
+      eRole: eu.length === 1 ? 'seul' : 'duo',
+      uRole: us.length === 1 ? 'seul' : 'duo',
+    };
+  }
+  // Boucles + plages de trous (numérotation continue)
+  BOUCLES = [];
+  let start = 1;
+  BOUCLE_CFG.forEach((b, i) => {
+    const fmt = formatById(b.format);
+    const n = Math.max(1, parseInt(b.holes) || 1);
+    const holes = [];
+    for (let k = 0; k < n; k++) holes.push(start + k);
+    BOUCLES.push({ id:'B'+(i+1), name:'Boucle '+(i+1), format:fmt.label, short:fmt.short, formatId:b.format, holes });
+    start += n;
+  });
+}
+buildConfig();
+
+function totalHoles() { return BOUCLES.reduce((s,b)=>s+b.holes.length, 0); }
+function holeBoucle(h) {
+  for (const b of BOUCLES) if (b.holes.includes(h)) return b;
+  return BOUCLES[BOUCLES.length-1];
+}
+// Points totaux et seuil de victoire.
+// Sans bonus : nombre de mini-matchs de base (inclut les sous-matchs "simple").
+// Avec bonus : dynamique = matchs de base + mini-matchs bonus déjà déclenchés.
+function totalMatchPoints() {
+  if (!BONUS_MM) return countBaseMatches();
+  return globalScore().inPlay;
+}
+function winThreshold() { return totalMatchPoints()/2 + 0.5; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   §1 — ÉTAT
+   results[groupId][hole] = 'E' (Europe gagne) | 'U' (USA) | 'H' (nul)
+   ─────────────────────────────────────────────────────────────────────────── */
+let STATE = blankState();
+let myGroup = null;        // groupe que CE scoreur saisit
+let currentHole = 1;       // trou affiché en saisie
+let pollTimer = null;
+let lastPushAt = 0;
+let dirty = false;        // des changements locaux ne sont pas encore confirmés sur le cloud
+let pushInFlight = false;  // un push est en cours (évite les envois concurrents)
+let celebrated = false;
+let prevE = 0, prevU = 0;
+let viewedBoucleId = null;     // boucle affichée en Live (null = suivi auto)
+let userPickedBoucle = false;  // l'utilisateur a-t-il choisi manuellement ?
+let lastAutoBoucleId = null;   // dernière boucle active détectée (pour auto-bascule)
+
+function blankState() {
+  const r = {};
+  Object.keys(GROUPS).forEach(g => r[g] = {});
+  return {
+    results: r,
+    players: PLAYERS.map(p=>Object.assign({},p)),
+    numGroups: NUMGROUPS,
+    boucles: BOUCLE_CFG.map(b=>Object.assign({},b)),
+    bonusMM: BONUS_MM,
+    cupName: CUP_NAME,
+    savedComposition: SAVED_COMP,
+    updated: Date.now()
+  };
+}
+
+function normalizeState(s) {
+  // Adopte d'abord la configuration distante si présente, puis reconstruit.
+  if (s && Array.isArray(s.players) && s.players.length) {
+    const ng = (Number.isInteger(s.numGroups) && s.numGroups >= 1) ? s.numGroups : NUMGROUPS;
+    PLAYERS = s.players.map(p => ({
+      name: String(p.name||'').slice(0,20),
+      idx: Number(p.idx),
+      team: (p.team==='U'?'U':'E'),
+      group: (Number(p.group) >= 1 && Number(p.group) <= ng ? Number(p.group) : 1),
+    }));
+    NUMGROUPS = ng;
+    if (Array.isArray(s.boucles) && s.boucles.length) {
+      BOUCLE_CFG = s.boucles.map(b => ({
+        format: formatById(b.format).id,
+        holes: Math.max(1, parseInt(b.holes) || 6),
+      }));
+    }
+    BONUS_MM = !!s.bonusMM;
+    if (typeof s.cupName === 'string') CUP_NAME = s.cupName.slice(0,40);
+    buildConfig();
+  }
+  if (s && s.savedComposition && Array.isArray(s.savedComposition.players)) SAVED_COMP = s.savedComposition;
+  const base = blankState();
+  if (s && s.results) {
+    Object.keys(GROUPS).forEach(g => { base.results[g] = Object.assign({}, s.results[g] || {}); });
+    base.updated = s.updated || Date.now();
+  }
+  return base;
+}
+
+// Applique une nouvelle configuration (depuis l'éditeur) et resynchronise.
+function applyConfig(newPlayers, newNumGroups, newBoucles, newBonus, newCupName) {
+  PLAYERS = newPlayers.map(p => Object.assign({}, p));
+  NUMGROUPS = newNumGroups;
+  BOUCLE_CFG = newBoucles.map(b => Object.assign({}, b));
+  BONUS_MM = !!newBonus;
+  if (typeof newCupName === 'string') CUP_NAME = newCupName.slice(0,40);
+  buildConfig();
+  STATE.players = PLAYERS.map(p=>Object.assign({},p));
+  STATE.numGroups = NUMGROUPS;
+  STATE.boucles = BOUCLE_CFG.map(b=>Object.assign({},b));
+  STATE.bonusMM = BONUS_MM;
+  STATE.cupName = CUP_NAME;
+  STATE.savedComposition = SAVED_COMP;
+  STATE.updated = Date.now();
+  saveAndSync();
+  applyCupName();
+  renderAll();
+}
+
+// Met à jour le nom affiché (logo + titre de l'onglet).
+function applyCupName() {
+  const sub = document.getElementById('cupNameLabel');
+  if (sub) sub.textContent = CUP_NAME;
+  document.title = 'Ryder Cup ' + CUP_NAME + ' — Live Scoring';
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   §2 — SCORING (mini-matchs, sous-matchs "simple", score global)
+   ─────────────────────────────────────────────────────────────────────────── */
+
+// Liste des mini-matchs d'un groupe pour une boucle donnée.
+// - Formats classiques : 1 mini-match d'équipe sur tous les trous de la boucle.
+// - Format "simple" : la boucle est coupée en 2 segments (1ère/2ème moitié) ;
+//   chaque segment génère des matchs 1v1 (direct au seg.1, croisé au seg.2 pour 4 joueurs).
+function groupMatches(groupId, boucle) {
+  const grp = GROUPS[groupId];
+  if (!grp) return [];
+  if (boucle.formatId !== 'simple') {
+    return [{
+      key: null, kind: 'team', holes: boucle.holes,
+      euLabel: grp.europe.join(' & ') || '—',
+      usLabel: grp.usa.join(' & ') || '—',
+    }];
+  }
+  // Simple : 2 segments
+  const n = boucle.holes.length;
+  const half = Math.floor(n / 2);
+  const seg1 = boucle.holes.slice(0, half);
+  const seg2 = boucle.holes.slice(half);
+  const eu = grp.europe, us = grp.usa;
+  const M = [];
+  if (eu.length === 1 && us.length === 1) {
+    M.push({ key:`${boucle.id}|s1m1`, kind:'simple', holes:seg1, euLabel:eu[0], usLabel:us[0], seg:1 });
+    M.push({ key:`${boucle.id}|s2m1`, kind:'simple', holes:seg2, euLabel:eu[0], usLabel:us[0], seg:2 });
+  } else if (eu.length === 2 && us.length === 2) {
+    M.push({ key:`${boucle.id}|s1m1`, kind:'simple', holes:seg1, euLabel:eu[0], usLabel:us[0], seg:1 });
+    M.push({ key:`${boucle.id}|s1m2`, kind:'simple', holes:seg1, euLabel:eu[1], usLabel:us[1], seg:1 });
+    M.push({ key:`${boucle.id}|s2m1`, kind:'simple', holes:seg2, euLabel:eu[0], usLabel:us[1], seg:2 });
+    M.push({ key:`${boucle.id}|s2m2`, kind:'simple', holes:seg2, euLabel:eu[1], usLabel:us[0], seg:2 });
+  }
+  return M;
+}
+
+// Mini-matchs actifs sur un trou donné (pour la saisie).
+function holeMatches(groupId, hole) {
+  const b = holeBoucle(hole);
+  return groupMatches(groupId, b).filter(mm => mm.holes.includes(hole));
+}
+
+// Lecture / écriture d'un résultat de trou pour un mini-match donné.
+// match d'équipe (key=null) -> results[g][hole] ; sous-match simple -> results[g]["key|hole"].
+function resultKey(mm, hole) { return mm.key ? `${mm.key}|${hole}` : String(hole); }
+function readResult(groupId, mm, hole) { const r = STATE.results[groupId]||{}; return r[resultKey(mm, hole)]; }
+function writeResult(groupId, mm, hole, val) {
+  if (!STATE.results[groupId]) STATE.results[groupId] = {};
+  const k = resultKey(mm, hole);
+  if (val === null) delete STATE.results[groupId][k];
+  else STATE.results[groupId][k] = val;
+}
+
+// Calcule un mini-match sur une liste ordonnée de trous, en lisant via une fonction d'accès.
+// freezeAtClinch=true : le score se fige au trou de clôture.
+function playSegmentBy(getVal, holes, freezeAtClinch) {
+  let e = 0, u = 0, played = 0, clinchIdx = -1;
+  for (let i = 0; i < holes.length; i++) {
+    const v = getVal(holes[i]);
+    if (v === 'E') { e++; played++; }
+    else if (v === 'U') { u++; played++; }
+    else if (v === 'H') { played++; }
+    if (clinchIdx === -1 && (v === 'E' || v === 'U' || v === 'H')) {
+      const remainingAfter = holes.length - (i + 1);
+      if (Math.abs(e - u) > remainingAfter) { clinchIdx = i; if (freezeAtClinch) break; }
+    }
+  }
+  const consumed = (freezeAtClinch && clinchIdx !== -1) ? (clinchIdx + 1) : played;
+  const remaining = holes.length - consumed;
+  const diff = e - u;
+  const decided = (clinchIdx !== -1) || (played === holes.length);
+  const leader = diff > 0 ? 'E' : diff < 0 ? 'U' : 'H';
+  let pts = null;
+  if (decided) pts = diff > 0 ? { e:1, u:0 } : diff < 0 ? { e:0, u:1 } : { e:0.5, u:0.5 };
+  return { e, u, played, remaining, leader, decided, diff, pts, total: holes.length, clinchIdx };
+}
+
+// Résout tous les mini-matchs d'un groupe+boucle (avec bonus éventuel).
+// Le bonus s'applique à tout mini-match plié en avance : match d'équipe OU sous-match simple.
+function boucleGroupResults(groupId, boucle) {
+  const res = STATE.results[groupId] || {};
+  return groupMatches(groupId, boucle).map(mm => {
+    const getVal = (h) => res[resultKey(mm, h)];
+    const main = playSegmentBy(getVal, mm.holes, true);
+    let bonus = null;
+    if (BONUS_MM && main.decided && main.clinchIdx !== -1 && main.clinchIdx < mm.holes.length - 1) {
+      const restHoles = mm.holes.slice(main.clinchIdx + 1);
+      bonus = playSegmentBy(getVal, restHoles, false);
+      bonus.holesList = restHoles;
+    }
+    return { desc: mm, main, bonus };
+  });
+}
+
+// Compat : mini-match d'équipe principal d'une boucle (formats classiques).
+function matchResult(groupId, boucle) {
+  const res = STATE.results[groupId] || {};
+  return playSegmentBy((h)=>res[String(h)], boucle.holes, true);
+}
+function matchResultFull(groupId, boucle) {
+  const list = boucleGroupResults(groupId, boucle);
+  return list[0] ? { main: list[0].main, bonus: list[0].bonus } : { main: matchResult(groupId, boucle), bonus: null };
+}
+
+// Nombre de mini-matchs "de base" (hors bonus) sur toute la partie.
+function countBaseMatches() {
+  let n = 0;
+  Object.keys(GROUPS).forEach(g => BOUCLES.forEach(b => { n += groupMatches(g, b).length; }));
+  return n;
+}
+
+function globalScore() {
+  let E = 0, U = 0, done = 0, inPlay = 0;
+  Object.keys(GROUPS).forEach(g => BOUCLES.forEach(b => {
+    boucleGroupResults(g, b).forEach(({ main, bonus }) => {
+      inPlay += 1;
+      if (main.decided && main.pts) { E += main.pts.e; U += main.pts.u; done++; }
+      if (bonus) { inPlay += 1; if (bonus.decided && bonus.pts) { E += bonus.pts.e; U += bonus.pts.u; done++; } }
+    });
+  }));
+  return { E, U, done, inPlay };
+}
+
+// Statut match play. Renvoie txt (compat), plus who/score séparés pour l'affichage 2 lignes.
+function statusText(m) {
+  if (m.played === 0) return { txt: 'À venir', who: '', score: 'À venir', cls: 'allsquare', thru: '' };
+  if (m.diff === 0) {
+    const sc = m.decided ? 'Nul' : 'AS';
+    return { txt: sc, who: '', score: sc, cls: 'allsquare', thru: m.decided ? 'Fini' : `Après ${m.played}` };
+  }
+  const lead = Math.abs(m.diff);
+  const cls = m.diff > 0 ? 'europe' : 'usa';
+  const who = m.diff > 0 ? 'EUR' : 'USA';
+  if (m.decided) {
+    const score = m.remaining > 0 ? `${lead}/${m.remaining}` : `${lead}UP`;
+    return { txt: `${who} ${score}`, who, score, cls, thru: 'Match gagné' };
+  }
+  return { txt: `${who} +${lead}`, who, score: `+${lead}`, cls, thru: `Après ${m.played}` };
+}
+
+function currentLiveBoucle() {
+  for (const b of BOUCLES) {
+    let allDone = true;
+    Object.keys(GROUPS).forEach(g => {
+      boucleGroupResults(g, b).forEach(({ main, bonus }) => {
+        if (!main.decided) allDone = false;
+        if (bonus && !bonus.decided) allDone = false;
+      });
+    });
+    if (!allDone) return b;
+  }
+  return BOUCLES[BOUCLES.length-1];
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   §3 — RENDER (hero, live, classement)
+   ─────────────────────────────────────────────────────────────────────────── */
+function fmtPlayers(names, role) {
+  const solo = (role === 'seul' || role === 'seule');
+  return `<span class="${solo ? 'solo' : ''}">${names.join(' & ')}</span>`;
+}
+function bump(el) { el.classList.remove('bump'); void el.offsetWidth; el.classList.add('bump'); setTimeout(()=>el.classList.remove('bump'), 400); }
+function fmtPts(v){ return v % 1 === 0 ? String(v) : v.toFixed(1); }
+
+function renderHero() {
+  const g = globalScore();
+  const eEl = document.getElementById('ptsEurope'), uEl = document.getElementById('ptsUsa');
+  const eTxt = fmtPts(g.E), uTxt = fmtPts(g.U);
+  if (eEl.textContent !== eTxt) { eEl.textContent = eTxt; if (g.E>prevE) bump(eEl); }
+  if (uEl.textContent !== uTxt) { uEl.textContent = uTxt; if (g.U>prevU) bump(uEl); }
+  prevE = g.E; prevU = g.U;
+  const total = totalMatchPoints();
+  const seuil = winThreshold();
+  document.getElementById('matchesDone').textContent = g.done;
+  const tl = document.getElementById('targetLine');
+  if (tl) tl.innerHTML = `Victoire à <b>${fmtPts(seuil)} points</b> · ${total} matchs · <span id="matchesDone">${g.done}</span>/${total} terminés`;
+  document.getElementById('progE').style.width = (total ? g.E / total * 50 : 0) + '%';
+  document.getElementById('progU').style.width = (total ? g.U / total * 50 : 0) + '%';
+
+  const lb = document.getElementById('leadBanner');
+  if (g.E >= seuil || g.U >= seuil) {
+    const winner = g.E >= seuil ? 'EUROPE' : 'USA';
+    lb.className = 'lead-banner win';
+    lb.innerHTML = `🏆 ${winner} REMPORTE LA RYDER CUP !`;
+    if (!celebrated) { celebrated = true; celebrate(); }
+  } else if (g.E === g.U) {
+    lb.className = 'lead-banner tie';
+    lb.textContent = g.done === 0 ? 'Tout reste à jouer' : `À égalité ${eTxt} – ${uTxt}`;
+    celebrated = false;
+  } else {
+    const leadTeam = g.E > g.U ? 'europe' : 'usa';
+    const leadName = g.E > g.U ? 'Europe' : 'USA';
+    const adv = Math.abs(g.E - g.U);
+    lb.className = 'lead-banner ' + leadTeam;
+    lb.textContent = `${leadName} mène de ${fmtPts(adv)} point${adv>1?'s':''}`;
+    celebrated = false;
+  }
+}
+
+// Points cumulés d'une boucle (pour les onglets) — inclut sous-matchs simple + bonus.
+function bouclePoints(boucle) {
+  let e = 0, u = 0, allDone = true, anyPlayed = false;
+  Object.keys(GROUPS).forEach(g => {
+    boucleGroupResults(g, boucle).forEach(({ main, bonus }) => {
+      if (main.played > 0) anyPlayed = true;
+      if (main.decided && main.pts) { e += main.pts.e; u += main.pts.u; }
+      else allDone = false;
+      if (bonus) {
+        if (bonus.decided && bonus.pts) { e += bonus.pts.e; u += bonus.pts.u; }
+        else allDone = false;
+      }
+    });
+  });
+  return { e, u, allDone, anyPlayed };
+}
+
+function renderBoucleTabs() {
+  const autoB = currentLiveBoucle();
+  // Auto-bascule : si l'utilisateur n'a pas choisi manuellement, on suit la boucle active.
+  if (!userPickedBoucle) viewedBoucleId = autoB.id;
+  // Si la boucle active a changé depuis le dernier rendu, on rebascule même si l'user avait choisi.
+  if (lastAutoBoucleId !== null && lastAutoBoucleId !== autoB.id) {
+    viewedBoucleId = autoB.id; userPickedBoucle = false;
+  }
+  lastAutoBoucleId = autoB.id;
+  if (!viewedBoucleId) viewedBoucleId = autoB.id;
+
+  const wrap = document.getElementById('boucleTabs');
+  wrap.innerHTML = BOUCLES.map(b => {
+    const bp = bouclePoints(b);
+    const isActive = b.id === viewedBoucleId;
+    const isLiveB = b.id === autoB.id;
+    let marker = '';
+    if (bp.allDone && bp.anyPlayed) marker = '<span class="bt-done">✓</span>';
+    else if (isLiveB) marker = '<span class="bt-live"></span>';
+    return `<div class="btab ${isActive?'active':''}" data-boucle="${b.id}">
+      ${marker}
+      <div class="bt-name">${b.name.replace('Boucle ','B')}</div>
+      <div class="bt-fmt">${b.short}</div>
+      <div class="bt-score"><span class="e">${fmtPts(bp.e)}</span> · <span class="u">${fmtPts(bp.u)}</span></div>
+    </div>`;
+  }).join('');
+  wrap.querySelectorAll('.btab').forEach(t => {
+    t.onclick = () => {
+      viewedBoucleId = t.dataset.boucle;
+      userPickedBoucle = (viewedBoucleId !== autoB.id); // si on reclique sur l'active, on repasse en auto
+      renderLive();
+    };
+  });
+}
+
+function renderLive() {
+  renderBoucleTabs();
+  const shownB = BOUCLES.find(b => b.id === viewedBoucleId) || currentLiveBoucle();
+  const autoB = currentLiveBoucle();
+  const liveTag = shownB.id === autoB.id
+    ? '<span style="color:var(--win-glow);font-size:10px;font-weight:700;margin-left:6px;">● EN COURS</span>'
+    : '';
+  document.getElementById('liveBoucleTitle').innerHTML =
+    `${shownB.name} <span style="font-size:11px;color:rgba(245,240,230,0.5);font-weight:500;margin-left:4px;">${shownB.format}</span>${liveTag}`;
+  let html = '';
+  Object.keys(GROUPS).forEach(gid => {
+    const grp = GROUPS[gid];
+    const isSimple = shownB.formatId === 'simple';
+
+    if (isSimple) {
+      // Carte avec une ligne par sous-match (1v1)
+      const subs = boucleGroupResults(gid, shownB);
+      const anyPlayed = subs.some(s => s.main.played>0);
+      let rows = '';
+      subs.forEach(({ desc, main, bonus }) => {
+        const st = statusText(main);
+        let bonusTag = '';
+        if (bonus) {
+          const bst = statusText(bonus);
+          const bcol = bst.cls==='europe'?'var(--europe-bright)':bst.cls==='usa'?'var(--usa-bright)':'var(--gold-bright)';
+          bonusTag = `<span class="slr-bonus" style="color:${bcol}">🎁${bst.score==='À venir'?'?':bst.score}</span>`;
+        }
+        rows += `
+          <div class="simple-live-row">
+            <span class="slr-eu">${desc.euLabel}</span>
+            <span class="slr-status ${st.cls}">${st.score}${bonusTag}</span>
+            <span class="slr-us">${desc.usLabel}</span>
+          </div>`;
+      });
+      const allDone = subs.length>0 && subs.every(s => s.main.decided && (!s.bonus || s.bonus.decided));
+      let centerBadge = '';
+      if (allDone) centerBadge = '<div class="mc-badge done">FINI</div>';
+      else if (anyPlayed) centerBadge = '<div class="mc-badge live">En cours</div>';
+      html += `
+        <div class="match-card boucle-active">
+          <div class="match-card-top">
+            <span class="match-tag">${grp.name}</span>
+            ${centerBadge}
+            <span class="match-format">${shownB.short}</span>
+          </div>
+          <div class="simple-live-list">${rows}</div>
+        </div>`;
+      return;
+    }
+
+    const { main, bonus } = matchResultFull(gid, shownB);
+    const m = main;
+    const st = statusText(m);
+    const clinchHole = (BONUS_MM && m.clinchIdx !== -1) ? shownB.holes[m.clinchIdx] : null;
+    const dots = shownB.holes.map(h => {
+      const v = (STATE.results[gid]||{})[h];
+      const c = v === 'E' ? 'e' : v === 'U' ? 'u' : v === 'H' ? 'h' : '';
+      const label = v === 'E' ? 'E' : v === 'U' ? 'U' : v === 'H' ? '=' : h;
+      const sep = (clinchHole !== null && h === clinchHole) ? ' clinch' : '';
+      return `<div class="mdot ${c}${sep}">${label}</div>`;
+    }).join('');
+
+    let bonusHtml = '';
+    if (bonus) {
+      const bst = statusText(bonus);
+      const bholes = bonus.holesList.join(', ');
+      bonusHtml = `
+        <div class="bonus-mm">
+          <div class="bonus-mm-head">🎁 Mini-match bonus · trou${bonus.holesList.length>1?'s':''} ${bholes}</div>
+          <div class="bonus-mm-row">
+            <span class="bmm-status ${bst.cls}">${bst.txt==='À venir'?'à jouer':bst.txt}</span>
+            <span class="bmm-thru">${bonus.decided?'+1 point attribué':bst.thru}</span>
+          </div>
+        </div>`;
+    }
+
+    const allSettled = m.decided && (!bonus || bonus.decided);
+    let centerBadge = '';
+    if (allSettled) {
+      centerBadge = '<div class="mc-badge done">FINI</div>';
+    } else if (m.played > 0) {
+      centerBadge = `<div class="mc-badge live">Reste ${m.remaining} trou${m.remaining>1?'s':''}</div>`;
+    }
+
+    html += `
+      <div class="match-card boucle-active">
+        <div class="match-card-top">
+          <span class="match-tag">${grp.name}</span>
+          ${centerBadge}
+          <span class="match-format">${shownB.short}</span>
+        </div>
+        <div class="match-row">
+          <div class="match-side">
+            <span class="ms-team europe">🇪🇺 Europe</span>
+            <span class="ms-players">${fmtPlayers(grp.europe, grp.eRole)}</span>
+          </div>
+          <div class="match-center"><div class="match-status ${st.cls}">${st.who?`<span class="mst-who">${st.who}</span>`:''}<span class="mst-score">${st.score}</span></div><div class="match-thru">${st.thru}</div></div>
+          <div class="match-side right">
+            <span class="ms-team usa">USA 🇺🇸</span>
+            <span class="ms-players">${fmtPlayers(grp.usa, grp.uRole)}</span>
+          </div>
+        </div>
+        <div class="match-dots">${dots}</div>
+        ${bonusHtml}
+      </div>`;
+  });
+  document.getElementById('liveMatches').innerHTML = html;
+}
+
+function renderStandings() {
+  const activeB = currentLiveBoucle();
+  let html = '';
+  BOUCLES.forEach(b => {
+    let bE = 0, bU = 0;
+    const cells = Object.keys(GROUPS).map(gid => {
+      // ── Boucle "simple" : agrège les points des sous-matchs du groupe ──
+      if (b.formatId === 'simple') {
+        const subs = boucleGroupResults(gid, b);
+        let ge = 0, gu = 0, played = 0, decided = 0, total = 0;
+        subs.forEach(({ main, bonus }) => {
+          total++;
+          if (main.decided && main.pts) { ge += main.pts.e; gu += main.pts.u; decided++; }
+          if (main.played > 0) played++;
+          if (bonus) {
+            total++;
+            if (bonus.decided && bonus.pts) { ge += bonus.pts.e; gu += bonus.pts.u; decided++; }
+          }
+        });
+        bE += ge; bU += gu;
+        let cls = 'pending', valHtml = '<span class="gs-neutral">À venir</span>', subTxt = '', subCls = '';
+        if (played > 0) {
+          cls = ge > gu ? 'e' : gu > ge ? 'u' : 'h';
+          valHtml = `<span class="gs-eu">EU ${fmtPts(ge)}</span><span class="gs-sep">–</span><span class="gs-us">${fmtPts(gu)} US</span>`;
+          if (decided === total) { subTxt = 'fini'; subCls = 'done'; }
+          else { subTxt = `${decided}/${total} matchs`; subCls = 'live'; }
+        }
+        return `<div class="bsum-g ${cls}"><div class="gn">${GROUPS[gid].name.replace('Groupe ','G')}</div><div class="gs gs-simple">${valHtml}</div>${subTxt?`<div class="gsub ${subCls}">${subTxt}</div>`:''}</div>`;
+      }
+
+      const { main, bonus } = matchResultFull(gid, b);
+      const m = main;
+      if (m.decided && m.pts) { bE += m.pts.e; bU += m.pts.u; }
+      if (bonus && bonus.decided && bonus.pts) { bE += bonus.pts.e; bU += bonus.pts.u; }
+      let cls = 'pending', val = '–';
+      if (m.played > 0) { cls = m.leader === 'E' ? 'e' : m.leader === 'U' ? 'u' : 'h'; val = statusText(m).txt; }
+      else { val = 'À venir'; }
+
+      // Sous-texte : "reste X trou(s)" si en cours, "fini" si la boucle (et bonus) terminée
+      let subTxt = '', subCls = '';
+      if (m.played > 0) {
+        const bonusOngoing = bonus && !bonus.decided;
+        if (m.decided && !bonusOngoing) { subTxt = 'fini'; subCls = 'done'; }
+        else if (bonusOngoing) { subTxt = `bonus : reste ${bonus.remaining} trou${bonus.remaining>1?'s':''}`; subCls = 'live'; }
+        else { subTxt = `reste ${m.remaining} trou${m.remaining>1?'s':''}`; subCls = 'live'; }
+      }
+
+      // Badge bonus : indique le camp gagnant du mini-match bonus (couleur assortie)
+      let bonusMark = '';
+      let splitStyle = '';
+      if (bonus) {
+        let bLab = '=', bCol = 'var(--gold-bright)', bLeader = 'h';
+        if (bonus.decided && bonus.pts) {
+          if (bonus.leader === 'E') { bLab = 'EU'; bCol = 'var(--europe-bright)'; bLeader = 'e'; }
+          else if (bonus.leader === 'U') { bLab = 'US'; bCol = 'var(--usa-bright)'; bLeader = 'u'; }
+          else { bLab = '='; bCol = 'var(--gold-bright)'; bLeader = 'h'; }
+        } else {
+          bLab = '?'; bCol = 'rgba(212,178,90,0.6)'; // bonus en cours, pas encore décidé
+        }
+        bonusMark = `<span class="bsum-bonus" style="color:${bCol}">+🎁${bLab}</span>`;
+
+        // Trait sous la case : moitié principal / moitié bonus si camps différents
+        const colorOf = (ld) => ld === 'e' ? 'var(--europe-bright)' : ld === 'u' ? 'var(--usa-bright)' : 'var(--gold)';
+        const mainLeader = m.leader === 'E' ? 'e' : m.leader === 'U' ? 'u' : 'h';
+        if (bonus.decided && bLeader !== mainLeader && m.played > 0) {
+          const cMain = colorOf(mainLeader), cBonus = colorOf(bLeader);
+          splitStyle = ` style="border-bottom:none; background-image: linear-gradient(90deg, ${cMain} 0 50%, ${cBonus} 50% 100%); background-size: 100% 2px; background-repeat: no-repeat; background-position: bottom;"`;
+        }
+      }
+      // Couleur du score selon le camp en tête (bleu EU / rouge US / or si nul ou à venir)
+      let valCol = 'var(--cream)';
+      if (m.played > 0) valCol = m.leader === 'E' ? 'var(--europe-bright)' : m.leader === 'U' ? 'var(--usa-bright)' : 'var(--gold-bright)';
+      return `<div class="bsum-g ${cls}"${splitStyle}><div class="gn">${GROUPS[gid].name.replace('Groupe ','G')}</div><div class="gs" style="color:${valCol}">${val} ${bonusMark}</div>${subTxt?`<div class="gsub ${subCls}">${subTxt}</div>`:''}</div>`;
+    }).join('');
+    html += `
+      <div class="bsum ${b.id===activeB.id?'active':''}">
+        <div class="bsum-top">
+          <div class="bsum-name">${b.name}<small>${b.format}</small></div>
+          <div class="bsum-pts">
+            <div class="bsum-pt e"><div class="v">${fmtPts(bE)}</div><div class="l">EUR</div></div>
+            <div class="bsum-pt u"><div class="v">${fmtPts(bU)}</div><div class="l">USA</div></div>
+          </div>
+        </div>
+        <div class="bsum-groups">${cells}</div>
+      </div>`;
+  });
+  document.getElementById('boucleSummary').innerHTML = html;
+  document.getElementById('rosterGrid').innerHTML = `
+    <div class="roster-col e"><h4>🇪🇺 Europe</h4>
+      ${ROSTER.europe.map(p=>`<div class="roster-player"><span>${p.name}</span><span class="idx">${p.idx>=0?'+':''}${p.idx.toFixed(1)}</span></div>`).join('')}</div>
+    <div class="roster-col u"><h4>🇺🇸 USA</h4>
+      ${ROSTER.usa.map(p=>`<div class="roster-player"><span>${p.name}</span><span class="idx">${p.idx>=0?'+':''}${p.idx.toFixed(1)}</span></div>`).join('')}</div>`;
+}
+
+function renderAll() { renderHero(); renderLive(); renderStandings(); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   §4 — VUE SAISIE (scoreur)
+   ─────────────────────────────────────────────────────────────────────────── */
+function renderGroupPicker() {
+  const wrap = document.getElementById('groupPicker');
+  wrap.innerHTML = Object.keys(GROUPS).map(gid => {
+    const g = GROUPS[gid];
+    return `<button class="group-opt ${myGroup===gid?'selected':''}" data-group="${gid}">
+      <div class="group-opt-name">${g.name}</div>
+      <div class="group-opt-vs">
+        <span class="e">🇪🇺 ${g.europe.join(' & ')}</span><br>
+        <span style="opacity:0.4;font-size:10px;">contre</span><br>
+        <span class="u">🇺🇸 ${g.usa.join(' & ')}</span>
+      </div></button>`;
+  }).join('');
+  wrap.querySelectorAll('.group-opt').forEach(b => {
+    b.onclick = () => { myGroup = b.dataset.group; currentHole = firstUnscoredHole(myGroup); showScorerEntry(); };
+  });
+}
+
+function firstUnscoredHole(gid) {
+  for (let h=1; h<=totalHoles(); h++) {
+    const ms = holeMatches(gid, h);
+    if (ms.some(mm => !readResult(gid, mm, h))) return h;
+  }
+  return totalHoles();
+}
+
+function showScorerEntry() {
+  document.getElementById('scorerPicker').style.display = 'none';
+  document.getElementById('scorerEntry').style.display = 'block';
+  renderScorerEntry();
+}
+
+function renderScorerEntry() {
+  if (!myGroup) return;
+  const g = GROUPS[myGroup];
+  const b = holeBoucle(currentHole);
+  const matches = holeMatches(myGroup, currentHole); // 1 (classique) ou plusieurs (simple)
+  const isSimple = b.formatId === 'simple';
+
+  // Un trou est "complet" si tous ses mini-matchs ont un score.
+  const allScored = matches.every(mm => !!readResult(myGroup, mm, currentHole));
+
+  // ── Bloc de saisie par mini-match ──
+  let entryHtml = '';
+  if (!isSimple) {
+    const mm = matches[0];
+    const cur = readResult(myGroup, mm, currentHole);
+    entryHtml = `
+      <div class="winner-q">Qui remporte le trou ${currentHole} ?</div>
+      <div class="winner-opts" data-mkey="">
+        <button class="wbtn wbtn-e ${cur==='E'?'sel':''}" data-w="E"><div><div>🇪🇺 Europe gagne</div><div class="wb-players">${g.europe.join(' & ')}</div></div><span class="wb-check">✓</span></button>
+        <button class="wbtn wbtn-h ${cur==='H'?'sel':''}" data-w="H"><div>🤝 Trou partagé (nul)</div><span class="wb-check">✓</span></button>
+        <button class="wbtn wbtn-u ${cur==='U'?'sel':''}" data-w="U"><div><div>🇺🇸 USA gagne</div><div class="wb-players">${g.usa.join(' & ')}</div></div><span class="wb-check">✓</span></button>
+      </div>`;
+  } else {
+    entryHtml = `<div class="winner-q">Trou ${currentHole} — ${matches.length} simple${matches.length>1?'s':''} à saisir</div>`;
+    matches.forEach((mm, idx) => {
+      const cur = readResult(myGroup, mm, currentHole);
+      entryHtml += `
+        <div class="simple-match">
+          <div class="simple-match-title"><span class="e">🇪🇺 ${mm.euLabel}</span> <span class="vs">vs</span> <span class="u">${mm.usLabel} 🇺🇸</span></div>
+          <div class="winner-opts compact" data-mkey="${mm.key}">
+            <button class="wbtn wbtn-e ${cur==='E'?'sel':''}" data-w="E" data-mkey="${mm.key}"><div>🇪🇺 ${mm.euLabel}</div><span class="wb-check">✓</span></button>
+            <button class="wbtn wbtn-h ${cur==='H'?'sel':''}" data-w="H" data-mkey="${mm.key}"><div>🤝 Nul</div><span class="wb-check">✓</span></button>
+            <button class="wbtn wbtn-u ${cur==='U'?'sel':''}" data-w="U" data-mkey="${mm.key}"><div>🇺🇸 ${mm.usLabel}</div><span class="wb-check">✓</span></button>
+          </div>
+        </div>`;
+    });
+  }
+
+  // ── Encarts de statut des mini-matchs du groupe pour cette boucle ──
+  const results = boucleGroupResults(myGroup, b);
+  let statusHtml = '';
+  results.forEach(({ desc, main, bonus }) => {
+    const st = statusText(main);
+    const col = st.cls==='europe'?'var(--europe-bright)':st.cls==='usa'?'var(--usa-bright)':'var(--gold-bright)';
+    const title = desc.kind === 'simple'
+      ? `${desc.euLabel} vs ${desc.usLabel} (trous ${desc.holes[0]}-${desc.holes[desc.holes.length-1]})`
+      : `Mini-match ${b.name}`;
+    // Pastilles de trous (style LIVE) pour ce mini-match
+    const clinchHole = (BONUS_MM && main.clinchIdx !== -1) ? desc.holes[main.clinchIdx] : null;
+    const dots = desc.holes.map(hh => {
+      const v = readResult(myGroup, desc, hh);
+      const c = v === 'E' ? 'e' : v === 'U' ? 'u' : v === 'H' ? 'h' : '';
+      const label = v === 'E' ? 'E' : v === 'U' ? 'U' : v === 'H' ? '=' : hh;
+      const sep = (clinchHole !== null && hh === clinchHole) ? ' clinch' : '';
+      return `<div class="mdot ${c}${sep}">${label}</div>`;
+    }).join('');
+    statusHtml += `
+      <div class="hole-status-now ${main.decided?'frozen':''}">
+        <div class="hsn-label">${title}${main.decided?' · figé ✓':''} :</div>
+        <span class="big" style="color:${col}">${st.txt==='À venir'?'pas encore commencé':st.txt}</span>
+        ${main.played>0?`<div class="match-dots">${dots}</div>`:''}
+      </div>`;
+    if (bonus) {
+      const bst = statusText(bonus);
+      const bcol = bst.cls==='europe'?'var(--europe-bright)':bst.cls==='usa'?'var(--usa-bright)':'var(--gold-bright)';
+      const bdots = bonus.holesList.map(hh => {
+        const v = readResult(myGroup, desc, hh);
+        const c = v === 'E' ? 'e' : v === 'U' ? 'u' : v === 'H' ? 'h' : '';
+        const label = v === 'E' ? 'E' : v === 'U' ? 'U' : v === 'H' ? '=' : hh;
+        return `<div class="mdot ${c}">${label}</div>`;
+      }).join('');
+      statusHtml += `
+        <div class="hole-status-now bonus">
+          <div class="hsn-label">🎁 Bonus · trou${bonus.holesList.length>1?'s':''} ${bonus.holesList.join(', ')} :</div>
+          <span class="big" style="color:${bcol}">${bst.txt==='À venir'?'à jouer':bst.txt}</span>
+          ${bonus.played>0?`<div class="match-dots">${bdots}</div>`:'<div class="hsn-detail">1 point en jeu sur les trous restants</div>'}
+        </div>`;
+    }
+  });
+
+  document.getElementById('scorerEntry').innerHTML = `
+    <div class="scorer-head">
+      <div class="scorer-head-top"><div class="scorer-group-name">${g.name}</div><button class="scorer-change" id="btnChangeGroup">Changer</button></div>
+      <div class="scorer-matchup"><span class="e">🇪🇺 ${g.europe.join(' & ')}</span><span class="u">${g.usa.join(' & ')} 🇺🇸</span></div>
+    </div>
+    <div class="hole-nav">
+      <button class="hole-arrow" id="holePrev" ${currentHole<=1?'disabled':''}>‹</button>
+      <div class="hole-display"><div class="hole-label">Trou</div><div class="hole-num">${currentHole}</div><div class="hole-boucle">${b.name} · ${b.short}</div></div>
+      <button class="hole-arrow ${(!allScored || currentHole>=totalHoles())?'soft-disabled':''}" id="holeNext" ${currentHole>=totalHoles()?'disabled':''}>›</button>
+    </div>
+    ${!allScored ? '<div class="need-score-hint" id="needScoreHint">Valide tous les scores du trou pour continuer</div>' : ''}
+    <div class="format-banner">${b.format}</div>
+    ${entryHtml}
+    ${statusHtml}`;
+
+  document.getElementById('btnChangeGroup').onclick = () => {
+    document.getElementById('scorerEntry').style.display = 'none';
+    document.getElementById('scorerPicker').style.display = 'block';
+    renderGroupPicker();
+  };
+  document.getElementById('holePrev').onclick = () => { if (currentHole>1){currentHole--; renderScorerEntry();} };
+  const nextBtn = document.getElementById('holeNext');
+  nextBtn.onclick = () => {
+    if (currentHole >= totalHoles()) return;
+    const ok = holeMatches(myGroup, currentHole).every(mm => !!readResult(myGroup, mm, currentHole));
+    if (!ok) { flashNeedScore(); return; }
+    currentHole++; renderScorerEntry();
+  };
+  document.querySelectorAll('.wbtn').forEach(btn => {
+    btn.onclick = () => {
+      const w = btn.dataset.w;
+      const mkey = btn.dataset.mkey || '';
+      const mm = matches.find(x => (x.key||'') === mkey) || matches[0];
+      if (readResult(myGroup, mm, currentHole) === w) return; // pas d'annulation
+      writeResult(myGroup, mm, currentHole, w);
+      STATE.updated = Date.now();
+      saveAndSync(); showToast(); renderAll();
+      // avance auto seulement quand TOUS les mini-matchs du trou sont saisis
+      const complete = holeMatches(myGroup, currentHole).every(x => !!readResult(myGroup, x, currentHole));
+      if (complete && currentHole < totalHoles()) setTimeout(()=>{ currentHole++; renderScorerEntry(); }, 350);
+      else renderScorerEntry();
+    };
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   §5 — CLOUD (synchronisation JSONBin)
+   ─────────────────────────────────────────────────────────────────────────── */
+function cloudHeaders() {
+  // Une clé d'accès utilise X-Access-Key ; une clé maître X-Master-Key.
+  const h = { 'Content-Type': 'application/json' };
+  if (CLOUD.accessKey.startsWith('$2')) h['X-Access-Key'] = CLOUD.accessKey;
+  else h['X-Master-Key'] = CLOUD.accessKey;
+  return h;
+}
+
+function setSyncUI(mode) {
+  const dot = document.getElementById('syncDot'), txt = document.getElementById('syncText');
+  const cd = document.getElementById('cloudStatusDot'), ct = document.getElementById('cloudStatusText');
+  // Si des scores locaux sont en attente, on l'indique en priorité (sauf en plein succès live).
+  if (mode === 'live' && dirty) {
+    dot.className='sync-dot local'; txt.textContent='En attente';
+    cd.className='sync-dot local'; ct.textContent='Scores en attente d\'envoi — synchro dès que possible';
+    return;
+  }
+  if (mode === 'live') { dot.className='sync-dot live'; txt.textContent='Live'; cd.className='sync-dot live'; ct.textContent='Connecté — synchro temps réel active'; }
+  else if (mode === 'connecting') { dot.className='sync-dot local'; txt.textContent='Connexion…'; cd.className='sync-dot local'; ct.textContent='Connexion au cloud en cours…'; }
+  else if (mode === 'error') { dot.className='sync-dot error'; txt.textContent='Hors-ligne'; cd.className='sync-dot error'; ct.textContent='Pas de connexion — les scores se synchroniseront au retour du réseau'; }
+  else { dot.className='sync-dot local'; txt.textContent='Local'; cd.className='sync-dot local'; ct.textContent='Mode local'; }
+}
+
+// Affiche une erreur de synchro visible (bandeau en haut + détail dans Réglages).
+function flashSyncError(msg) {
+  const dot = document.getElementById('syncDot'), txt = document.getElementById('syncText');
+  dot.className = 'sync-dot error'; txt.textContent = 'Erreur';
+  const cd = document.getElementById('cloudStatusDot'), ct = document.getElementById('cloudStatusText');
+  cd.className = 'sync-dot error'; ct.textContent = msg;
+  const banner = document.getElementById('errBanner');
+  if (banner) { banner.textContent = '⚠️ ' + msg; banner.style.display = 'block'; }
+}
+function clearSyncError() {
+  const banner = document.getElementById('errBanner');
+  if (banner) banner.style.display = 'none';
+}
+
+// Fusionne les scores distants dans l'état local (par groupe et par clé de trou).
+// En cas de conflit sur la même clé, la valeur LOCALE gagne (c'est notre saisie).
+// Ainsi, pousser notre état ne peut plus effacer les saisies des autres appareils.
+function mergeRemoteIntoLocal(remote) {
+  if (!remote || typeof remote !== 'object') return;
+  if (remote.results && typeof remote.results === 'object') {
+    Object.keys(remote.results).forEach(g => {
+      const rg = remote.results[g];
+      if (!rg || typeof rg !== 'object') return;
+      if (!STATE.results[g]) STATE.results[g] = {};
+      Object.keys(rg).forEach(k => {
+        if (STATE.results[g][k] === undefined) STATE.results[g][k] = rg[k];
+      });
+    });
+  }
+  // Conserve la compo par défaut distante si on n'en a pas localement.
+  if (!SAVED_COMP && remote.savedComposition && Array.isArray(remote.savedComposition.players)) {
+    SAVED_COMP = remote.savedComposition;
+    STATE.savedComposition = SAVED_COMP;
+  }
+}
+
+async function cloudPush(opts) {
+  const fullReplace = opts && opts.fullReplace; // reset : remplace tout sans fusion
+  if (!CLOUD.connected) { dirty = true; return false; }
+  if (pushInFlight) { dirty = true; return false; } // un push tourne déjà ; on redéclenchera
+  pushInFlight = true;
+  try {
+    // 1. FUSION : relit le cloud et intègre les scores des autres appareils avant d'écrire.
+    if (!fullReplace) {
+      try {
+        const rg = await fetch(`https://api.jsonbin.io/v3/b/${CLOUD.binId}/latest`, { headers: cloudHeaders() });
+        if (rg.ok) { const jj = await rg.json(); mergeRemoteIntoLocal(jj.record); }
+      } catch(e) { /* lecture impossible : on pousse quand même (le pire = ancien comportement) */ }
+    }
+    const stamp = STATE.updated;
+    const r = await fetch(`https://api.jsonbin.io/v3/b/${CLOUD.binId}`, {
+      method: 'PUT', headers: cloudHeaders(), body: JSON.stringify(STATE),
+    });
+    if (!r.ok) {
+      let detail = '';
+      try { const j = await r.json(); detail = j.message || JSON.stringify(j); } catch(e){}
+      dirty = true; // échec : il reste des données locales à pousser
+      if (r.status === 401 || r.status === 403) {
+        flashSyncError("Écriture refusée — la clé d'accès n'a pas la permission UPDATE. Crée une nouvelle Access Key avec READ + UPDATE (voir Réglages).");
+      } else {
+        flashSyncError(`Échec d'enregistrement (erreur ${r.status}). ${detail}`);
+      }
+      return false;
+    }
+    lastPushAt = Date.now();
+    // Si rien n'a changé localement pendant l'envoi, on est synchro.
+    if (STATE.updated === stamp) dirty = false;
+    saveLocalBackup();
+    setSyncUI('live');
+    clearSyncError();
+    return true;
+  } catch(e) {
+    dirty = true; // pas de réseau : on réessaiera (polling + événement online)
+    flashSyncError('Hors-ligne — les scores saisis seront synchronisés au retour du réseau.');
+    return false;
+  } finally {
+    pushInFlight = false;
+  }
+}
+
+// Pousse les changements locaux en attente s'il y en a (appelé au retour du réseau).
+// ── Sauvegarde locale de secours (survit au rechargement/fermeture de l'onglet) ──
+// Protégée par try/catch : s'il n'y a pas de stockage disponible, on ne fait rien.
+const BACKUP_KEY = 'rydercup_backup_' + CLOUD.binId;
+function saveLocalBackup() {
+  try { localStorage.setItem(BACKUP_KEY, JSON.stringify({ state: STATE, dirty: dirty, at: Date.now() })); } catch(e) {}
+}
+function loadLocalBackup() {
+  try {
+    const raw = localStorage.getItem(BACKUP_KEY);
+    if (!raw) return null;
+    const b = JSON.parse(raw);
+    if (b && b.state && b.state.updated) return b;
+  } catch(e) {}
+  return null;
+}
+
+async function flushPending() {
+  if (dirty && CLOUD.connected && !pushInFlight) {
+    await cloudPush();
+  }
+}
+
+async function cloudPull() {
+  if (!CLOUD.connected) return;
+  // 1. S'il reste des scores locaux non synchronisés, on les pousse d'abord.
+  if (dirty) { await flushPending(); }
+  try {
+    const r = await fetch(`https://api.jsonbin.io/v3/b/${CLOUD.binId}/latest`, { headers: cloudHeaders() });
+    if (!r.ok) throw new Error('http '+r.status);
+    const j = await r.json();
+    const remote = j.record;
+    // 2. On n'adopte le distant QUE s'il est plus récent ET qu'on n'a pas de changements locaux en attente.
+    if (!dirty && remote && remote.updated && remote.updated > STATE.updated && (Date.now() - lastPushAt > 1500)) {
+      STATE = normalizeState(remote);
+      applyCupName();
+      renderAll();
+      saveLocalBackup();
+      if (myGroup && !GROUPS[myGroup]) { myGroup = null; }
+      if (document.getElementById('view-scorer').classList.contains('active')) {
+        if (myGroup && document.getElementById('scorerEntry').style.display === 'block') renderScorerEntry();
+        else { document.getElementById('scorerEntry').style.display='none'; document.getElementById('scorerPicker').style.display='block'; renderGroupPicker(); }
+      }
+      if (document.getElementById('view-settings').classList.contains('active')) openEditor();
+    }
+    if (!dirty) { setSyncUI('live'); clearSyncError(); }
+  } catch(e) { setSyncUI('error'); dirty = dirty; /* garde l'état dirty */ }
+}
+
+async function connectCloud(opts) {
+  const silent = opts && opts.silent;
+  try {
+    const r = await fetch(`https://api.jsonbin.io/v3/b/${CLOUD.binId}/latest`, { headers: cloudHeaders() });
+    if (!r.ok) throw new Error('http '+r.status);
+    const j = await r.json();
+    CLOUD.connected = true;
+    const remote = j.record;
+    if (remote && remote.updated) STATE = normalizeState(remote);
+    else { STATE = blankState(); await cloudPush(); }
+    applyCupName();
+    setSyncUI('live');
+    startPolling();
+    renderAll();
+    return true;
+  } catch(e) {
+    CLOUD.connected = false;
+    if (!silent) setSyncUI('error');
+    // Filet de sécurité : on lance quand même le polling, qui retentera la connexion tout seul.
+    startPolling();
+    return false;
+  }
+}
+
+// Démarre (ou redémarre) le polling. cloudTick tente de se (re)connecter si besoin.
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(cloudTick, CLOUD.pollMs);
+}
+
+// Cycle de polling : si pas connecté, on retente une connexion ; sinon on synchronise.
+// En arrière-plan (onglet caché), on ne fait rien : économise le quota API et la batterie.
+// La resynchro immédiate est déclenchée par l'événement visibilitychange au retour.
+async function cloudTick() {
+  if (typeof document !== 'undefined' && document.hidden) return;
+  if (!CLOUD.connected) {
+    await connectCloud({ silent: true });
+    return;
+  }
+  await cloudPull();
+}
+
+// Connexion au démarrage avec plusieurs tentatives rapprochées (réseau parfois lent au lancement).
+async function connectWithRetry() {
+  setSyncUI('connecting');
+  const delays = [0, 800, 1800, 3500]; // jusqu'à ~4 essais sur ~6s
+  for (let i = 0; i < delays.length; i++) {
+    if (delays[i]) await new Promise(r => setTimeout(r, delays[i]));
+    const ok = await connectCloud({ silent: true });
+    if (ok) return true;
+  }
+  // Échec après plusieurs essais : on bascule en "hors-ligne" mais le polling continue de retenter.
+  setSyncUI('error');
+  return false;
+}
+
+function saveAndSync() {
+  dirty = true; // tout changement local est à pousser (même hors-ligne)
+  saveLocalBackup(); // filet de sécurité : survit à un rechargement hors-ligne
+  if (!CLOUD.connected) return;
+  clearTimeout(window._pushTimer);
+  window._pushTimer = setTimeout(cloudPush, 400);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   §6 — NAV, ACTIONS, INIT
+   ─────────────────────────────────────────────────────────────────────────── */
+function switchView(v) {
+  document.querySelectorAll('.view').forEach(el=>el.classList.remove('active'));
+  document.getElementById('view-'+v).classList.add('active');
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.toggle('active', b.dataset.view===v));
+  document.getElementById('btnSettings').classList.toggle('active', v==='settings');
+  if (v==='scorer' && !myGroup) renderGroupPicker();
+  if (v==='settings') openEditor();
+  window.scrollTo(0,0);
+}
+
+function showToast() { const t = document.getElementById('savedToast'); t.classList.add('show'); setTimeout(()=>t.classList.remove('show'), 1100); }
+
+// Fait clignoter l'indication "valide un score" quand on tente d'avancer sans score.
+function flashNeedScore() {
+  const hint = document.getElementById('needScoreHint');
+  if (hint) { hint.classList.remove('flash'); void hint.offsetWidth; hint.classList.add('flash'); }
+}
+
+function celebrate() {
+  const colors = ['#d4b25a','#4a78ff','#ff5a6e','#43d98a','#f0cd6f'];
+  for (let i=0;i<60;i++){
+    const c = document.createElement('div'); c.className='confetti';
+    c.style.left = Math.random()*100+'%';
+    c.style.background = colors[Math.floor(Math.random()*colors.length)];
+    c.style.borderRadius = Math.random()>0.5?'50%':'2px';
+    document.body.appendChild(c);
+    const dur = 2000 + Math.random()*1500, x = (Math.random()-0.5)*200;
+    c.animate([
+      { transform:`translate(0,0) rotate(0deg)`, opacity:1 },
+      { transform:`translate(${x}px, ${window.innerHeight+40}px) rotate(${Math.random()*720}deg)`, opacity:0.2 }
+    ], { duration:dur, easing:'cubic-bezier(.3,.6,.5,1)' });
+    setTimeout(()=>c.remove(), dur);
+  }
+}
+
+document.querySelectorAll('.nav-btn').forEach(b => b.onclick = ()=>switchView(b.dataset.view));
+document.getElementById('btnSettings').onclick = ()=>switchView('settings');
+
+/* ─── ÉDITEUR DE CONFIGURATION ───────────────────────────────────────── */
+let draftPlayers = [];   // copie de travail
+let draftNumGroups = 3;
+let draftBoucles = [];
+let draftBonus = false;
+let draftCupName = '';
+
+function openEditor() {
+  draftPlayers = PLAYERS.map(p => Object.assign({}, p));
+  draftNumGroups = NUMGROUPS;
+  draftBoucles = BOUCLE_CFG.map(b => Object.assign({}, b));
+  draftBonus = BONUS_MM;
+  draftCupName = CUP_NAME;
+  sortDraftPlayers();
+  document.getElementById('chkBonus').checked = draftBonus;
+  document.getElementById('inpCupName').value = draftCupName;
+  renderBouclesEditor();
+  renderGroupCounter();
+  renderEditor();
+  updateSavedCompStatus();
+}
+
+// ── Éditeur des boucles (format + nb de trous) ──
+function renderBouclesEditor() {
+  const wrap = document.getElementById('bouclesEditor');
+  wrap.innerHTML = draftBoucles.map((b, i) => {
+    const opts = FORMAT_OPTIONS.map(f => `<option value="${f.id}" ${f.id===b.format?'selected':''}>${f.label}</option>`).join('');
+    return `
+      <div class="brow" data-i="${i}">
+        <span class="blab">B${i+1}</span>
+        <select class="bfmt">${opts}</select>
+        <div class="bholes">
+          <button class="bh-minus">－</button>
+          <input class="bh-num" type="number" min="1" max="36" value="${b.holes}">
+          <button class="bh-plus">＋</button>
+        </div>
+      </div>`;
+  }).join('');
+  wrap.querySelectorAll('.brow').forEach(row => {
+    const i = +row.dataset.i;
+    row.querySelector('.bfmt').onchange = e => { draftBoucles[i].format = e.target.value; };
+    row.querySelector('.bh-num').oninput = e => { draftBoucles[i].holes = Math.max(1, parseInt(e.target.value)||1); updateHolesTotal(); };
+    row.querySelector('.bh-minus').onclick = () => { draftBoucles[i].holes = Math.max(1, draftBoucles[i].holes-1); renderBouclesEditor(); };
+    row.querySelector('.bh-plus').onclick = () => { draftBoucles[i].holes = Math.min(36, draftBoucles[i].holes+1); renderBouclesEditor(); };
+  });
+  updateHolesTotal();
+}
+function updateHolesTotal() {
+  const tot = draftBoucles.reduce((s,b)=>s+(parseInt(b.holes)||0),0);
+  const pts = draftNumGroups * draftBoucles.length;
+  const seuil = pts/2 + 0.5;
+  const bonusNote = draftBonus
+    ? ` · <span style="color:var(--win-glow)">bonus actif : seuil dynamique (≥ ${fmtPts(seuil)})</span>`
+    : ` · victoire à ${fmtPts(seuil)} pts`;
+  document.getElementById('holesTotal').innerHTML =
+    `${draftBoucles.length} boucle(s) · <b>${tot} trous</b> au total · ${pts} matchs${bonusNote}`;
+}
+
+document.getElementById('chkBonus').onchange = (e) => { draftBonus = e.target.checked; updateHolesTotal(); };
+document.getElementById('inpCupName').oninput = (e) => { draftCupName = e.target.value; };
+
+document.getElementById('btnAddBoucle').onclick = () => {
+  if (draftBoucles.length >= 9) return;
+  draftBoucles.push({ format: 'autre', holes: 6 });
+  renderBouclesEditor();
+};
+document.getElementById('btnRemBoucle').onclick = () => {
+  if (draftBoucles.length <= 1) return;
+  draftBoucles.pop();
+  renderBouclesEditor();
+};
+
+// ── Compteur de groupes ──
+function renderGroupCounter() {
+  document.getElementById('numGroupsVal').textContent = draftNumGroups;
+  updateHolesTotal();
+}
+document.getElementById('btnGrpMinus').onclick = () => {
+  if (draftNumGroups <= 1) return;
+  draftNumGroups--;
+  // réaffecte les joueurs des groupes supprimés vers le dernier groupe valide
+  draftPlayers.forEach(p => { if (p.group > draftNumGroups) p.group = draftNumGroups; });
+  sortDraftPlayers();
+  renderGroupCounter(); renderEditor();
+};
+document.getElementById('btnGrpPlus').onclick = () => {
+  if (draftNumGroups >= 9) return;
+  draftNumGroups++;
+  renderGroupCounter(); renderEditor();
+};
+
+// ── Éditeur des joueurs ──
+function renderEditor() {
+  const wrap = document.getElementById('editorList');
+  let html = `<div class="erow-head"><span>Joueur</span><span>Index</span><span>Camp</span><span>Groupe</span><span></span></div>`;
+  draftPlayers.forEach((p, i) => {
+    const grpBtns = [];
+    for (let gn = 1; gn <= draftNumGroups; gn++) grpBtns.push(`<button class="egrp ${p.group===gn?'on':''}" data-grp="${gn}">${gn}</button>`);
+    html += `
+      <div class="erow" data-i="${i}">
+        <input type="text" class="enm" value="${(p.name||'').replace(/"/g,'&quot;')}" placeholder="Prénom" maxlength="20">
+        <input type="number" step="0.1" class="idx eix" value="${p.idx}">
+        <div class="eseg">
+          <button class="eteam ${p.team==='E'?'on-e':''}" data-team="E">EU</button>
+          <button class="eteam ${p.team==='U'?'on-u':''}" data-team="U">US</button>
+        </div>
+        <div class="eseg grp">${grpBtns.join('')}</div>
+        <button class="edel" title="Supprimer">✕</button>
+      </div>`;
+  });
+  wrap.innerHTML = html;
+  wrap.querySelectorAll('.erow').forEach(row => {
+    const i = +row.dataset.i;
+    row.querySelector('.enm').oninput = e => draftPlayers[i].name = e.target.value;
+    row.querySelector('.eix').oninput = e => draftPlayers[i].idx = e.target.value === '' ? 0 : parseFloat(e.target.value);
+    row.querySelectorAll('.eteam').forEach(b => b.onclick = () => { draftPlayers[i].team = b.dataset.team; renderEditor(); });
+    row.querySelectorAll('.egrp').forEach(b => b.onclick = () => { draftPlayers[i].group = +b.dataset.grp; sortDraftPlayers(); renderEditor(); });
+    row.querySelector('.edel').onclick = () => { draftPlayers.splice(i,1); renderEditor(); };
+  });
+  renderBalance();
+}
+
+// Réorganise la liste : groupe croissant, puis EU avant US (ordre stable sinon).
+function sortDraftPlayers() {
+  draftPlayers = draftPlayers
+    .map((p, idx) => ({ p, idx }))
+    .sort((a, b) => {
+      if (a.p.group !== b.p.group) return a.p.group - b.p.group;       // groupe croissant
+      const ta = a.p.team === 'E' ? 0 : 1, tb = b.p.team === 'E' ? 0 : 1;
+      if (ta !== tb) return ta - tb;                                    // EU avant US
+      return a.idx - b.idx;                                             // sinon ordre d'origine
+    })
+    .map(o => o.p);
+}
+
+function renderBalance() {
+  const eu = draftPlayers.filter(p=>p.team==='E');
+  const us = draftPlayers.filter(p=>p.team==='U');
+  const avg = arr => arr.length ? (arr.reduce((s,p)=>s+(+p.idx||0),0)/arr.length) : 0;
+  const me = avg(eu), mu = avg(us);
+  document.getElementById('editorBalance').innerHTML = `
+    <div class="eb e"><div class="lbl">Europe</div><div class="val">${eu.length} · ${me.toFixed(2)}</div></div>
+    <div class="eb d"><div class="lbl">Écart moy.</div><div class="val">${Math.abs(me-mu).toFixed(2)}</div></div>
+    <div class="eb u"><div class="lbl">USA</div><div class="val">${us.length} · ${mu.toFixed(2)}</div></div>`;
+
+  // validation : noms, groupes 2-4 joueurs, opposition EU/US dans chaque groupe
+  const warn = document.getElementById('editorWarn');
+  const issues = [];
+  draftPlayers.forEach((p,i)=>{ if(!p.name || !p.name.trim()) issues.push(`Joueur ${i+1} sans prénom`); });
+  for (let g = 1; g <= draftNumGroups; g++) {
+    const inG = draftPlayers.filter(p=>p.group===g);
+    const e = inG.filter(p=>p.team==='E').length, u = inG.filter(p=>p.team==='U').length;
+    if (inG.length < 2) issues.push(`Groupe ${g} : minimum 2 joueurs`);
+    else if (inG.length > 4) issues.push(`Groupe ${g} : maximum 4 joueurs`);
+    if (inG.length >= 2 && (e === 0 || u === 0)) issues.push(`Groupe ${g} : il faut au moins 1 EU et 1 US`);
+  }
+
+  // validation spécifique au format "simple"
+  const hasSimple = draftBoucles.some(b => b.format === 'simple');
+  if (hasSimple) {
+    if (draftPlayers.length % 4 !== 0) {
+      issues.push(`Format simple : le nombre total de joueurs doit être un multiple de 4 (actuellement ${draftPlayers.length})`);
+    }
+    for (let g = 1; g <= draftNumGroups; g++) {
+      const inG = draftPlayers.filter(p=>p.group===g);
+      const e = inG.filter(p=>p.team==='E').length, u = inG.filter(p=>p.team==='U').length;
+      if (inG.length !== 2 && inG.length !== 4) {
+        issues.push(`Format simple : le groupe ${g} doit avoir 2 ou 4 joueurs`);
+      } else if (e !== u) {
+        issues.push(`Format simple : le groupe ${g} doit avoir autant d'EU que d'US`);
+      }
+    }
+    draftBoucles.forEach((b, i) => {
+      if (b.format === 'simple' && (parseInt(b.holes) % 2 !== 0)) {
+        issues.push(`Format simple (boucle ${i+1}) : le nombre de trous doit être pair`);
+      }
+    });
+  }
+
+  if (issues.length) { warn.innerHTML = '<span class="editor-warn-bad">⚠️ ' + issues.join(' · ') + '</span>'; }
+  else { warn.textContent = '✓ Configuration valide. N\'oublie pas d\'enregistrer pour synchroniser.'; }
+  return issues.length === 0;
+}
+
+document.getElementById('btnAddPlayer').onclick = () => {
+  draftPlayers.push({ name: '', idx: 0, team: draftPlayers.filter(p=>p.team==='E').length <= draftPlayers.filter(p=>p.team==='U').length ? 'E':'U', group: 1 });
+  renderEditor();
+};
+
+document.getElementById('btnResetPlayers').onclick = () => {
+  if (!confirm('Revenir à la configuration par défaut (FFGolf-DC) ?')) return;
+  draftPlayers = DEFAULT_PLAYERS.map(p => Object.assign({}, p));
+  draftNumGroups = DEFAULT_NUMGROUPS;
+  draftBoucles = DEFAULT_BOUCLES.map(b => Object.assign({}, b));
+  draftBonus = false;
+  draftCupName = 'FFGolf-DC';
+  document.getElementById('chkBonus').checked = false;
+  document.getElementById('inpCupName').value = draftCupName;
+  renderBouclesEditor(); renderGroupCounter(); renderEditor();
+};
+
+document.getElementById('btnSavePlayers').onclick = () => {
+  const cfg = buildCleanConfigFromDraft();
+  if (!cfg) return;
+  applyConfig(cfg.players, cfg.numGroups, cfg.boucles, cfg.bonus, cfg.cupName);
+  currentHole = 1;
+  showToast();
+  renderBouclesEditor(); renderGroupCounter(); renderEditor();
+};
+
+// Valide le brouillon et renvoie un objet de config propre (ou null si invalide).
+function buildCleanConfigFromDraft() {
+  if (!renderBalance()) { alert('Corrige les points signalés en rouge avant d\'enregistrer.'); return null; }
+  const players = draftPlayers.filter(p => p.name && p.name.trim()).map(p => ({
+    name: p.name.trim(), idx: +p.idx || 0,
+    team: p.team==='U'?'U':'E',
+    group: (p.group>=1 && p.group<=draftNumGroups) ? +p.group : 1
+  }));
+  if (players.length < 2) { alert('Il faut au moins 2 joueurs.'); return null; }
+  const boucles = draftBoucles.map(b => ({ format: formatById(b.format).id, holes: Math.max(1, parseInt(b.holes)||1) }));
+  const cupName = (draftCupName||'').trim() || 'FFGolf-DC';
+  return { players, numGroups: draftNumGroups, boucles, bonus: draftBonus, cupName };
+}
+
+// Affiche l'état de la compo par défaut personnalisée.
+function updateSavedCompStatus() {
+  const el = document.getElementById('savedCompStatus');
+  if (!el) return;
+  if (SAVED_COMP && Array.isArray(SAVED_COMP.players)) {
+    const n = SAVED_COMP.players.length;
+    const ng = SAVED_COMP.numGroups || 1;
+    el.innerHTML = `✓ Composition enregistrée : <b>${n} joueurs</b>, ${ng} groupe${ng>1?'s':''}${SAVED_COMP.cupName?` · « ${SAVED_COMP.cupName} »`:''}.`;
+    el.style.color = 'var(--win-glow)';
+  } else {
+    el.textContent = 'Aucune composition personnalisée enregistrée.';
+    el.style.color = 'rgba(245,240,230,0.6)';
+  }
+}
+
+// Mémorise la composition affichée comme "défaut" personnalisé (et l'applique).
+document.getElementById('btnSetDefault').onclick = () => {
+  const cfg = buildCleanConfigFromDraft();
+  if (!cfg) return;
+  SAVED_COMP = JSON.parse(JSON.stringify(cfg));
+  applyConfig(cfg.players, cfg.numGroups, cfg.boucles, cfg.bonus, cfg.cupName);
+  updateSavedCompStatus();
+  const btn = document.getElementById('btnSetDefault');
+  btn.textContent = '✓ Enregistrée !';
+  setTimeout(()=>btn.textContent='💾 Définir comme défaut', 1800);
+  showToast();
+};
+
+// Restaure la composition par défaut personnalisée.
+document.getElementById('btnLoadDefault').onclick = () => {
+  if (!SAVED_COMP || !Array.isArray(SAVED_COMP.players)) { alert('Aucune composition par défaut enregistrée. Utilise « Définir comme défaut » d\'abord.'); return; }
+  if (!confirm('Charger ta composition par défaut ? La configuration actuelle sera remplacée.')) return;
+  const c = SAVED_COMP;
+  applyConfig(c.players, c.numGroups || 1, (c.boucles||DEFAULT_BOUCLES), !!c.bonus, c.cupName || 'FFGolf-DC');
+  currentHole = 1;
+  openEditor();
+  showToast();
+};
+
+document.getElementById('btnShareLink').onclick = async () => {
+  const link = location.href.split('#')[0];
+  const btn = document.getElementById('btnShareLink');
+  try { await navigator.clipboard.writeText(link); btn.textContent = '✓ Lien copié !'; }
+  catch(e) { prompt('Copie ce lien et partage-le :', link); }
+  setTimeout(()=>btn.textContent='📋 Copier le lien à partager', 2000);
+};
+
+document.getElementById('btnReset').onclick = async () => {
+  if (!confirm('Effacer tous les scores ? Cette action est définitive.')) return;
+  STATE = blankState(); celebrated = false; dirty = true;
+  await cloudPush({ fullReplace: true }); renderAll();
+  if (myGroup) { currentHole = 1; renderScorerEntry(); }
+  saveLocalBackup();
+  showToast();
+};
+
+// Démarrage : restauration de la sauvegarde locale, rendu, puis connexion cloud.
+(function init(){
+  // 1. Restaure la sauvegarde locale (protège contre un rechargement hors-ligne).
+  const backup = loadLocalBackup();
+  if (backup) {
+    STATE = normalizeState(backup.state);
+    if (backup.dirty) dirty = true; // des scores n'avaient pas été envoyés : ils repartiront
+  }
+  applyCupName();
+  renderAll();
+  setSyncUI('connecting');
+  connectWithRetry();
+
+  // Au retour du réseau : on pousse immédiatement les scores en attente, puis on resynchronise.
+  window.addEventListener('online', async () => {
+    if (!CLOUD.connected) { await connectCloud({ silent: true }); }
+    await flushPending();
+    await cloudPull();
+  });
+  // Quand l'app revient au premier plan (déverrouillage du téléphone) :
+  // reconnexion si besoin, puis envoi des scores en attente et resynchro immédiate.
+  document.addEventListener('visibilitychange', async () => {
+    if (document.hidden) return;
+    if (!CLOUD.connected) { await connectCloud({ silent: true }); }
+    if (CLOUD.connected) {
+      await flushPending();
+      await cloudPull();
+    }
+  });
+})();
+</script>
+</body>
+</html>
